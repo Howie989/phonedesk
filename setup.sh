@@ -194,8 +194,17 @@ if [ -n "${PHONEDESK_RELEASE_BASE:-}" ]; then
 else
   if [ -z "$version" ]; then
     have curl || die "curl is required"
-    tag="$(curl -fsSLI --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" 2>/dev/null | sed -n 's#.*/tag/##p')" || tag=""
-    [ -n "$tag" ] || die "could not find the latest release of $repo (is there a release yet, and are you online?)"
+    # GitHub answers 5xx now and then: retry the redirect lookup, then fall back to the API, and say what failed.
+    tag=""; why=""
+    for attempt in 1 2 3 4; do
+      tag="$(curl -fsSLI --retry 2 --retry-delay 2 --connect-timeout 15 --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" 2>"$tmp/latest.err" | sed -n 's#.*/tag/##p')" || tag=""
+      [ -n "$tag" ] && break
+      tag="$(curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 15 --proto '=https' -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/releases/latest" 2>>"$tmp/latest.err" | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
+      [ -n "$tag" ] && break
+      why="$(tr '\n' ' ' <"$tmp/latest.err" | sed 's/  */ /g')"
+      [ "$attempt" -lt 4 ] && { info "GitHub did not answer (${why:-no response}), trying again…"; sleep $((attempt * 3)); }
+    done
+    [ -n "$tag" ] || die "could not reach GitHub to find the latest release of $repo (${why:-no response}). Check your connection and run the command again, or pick a version with --version 0.1.1"
   else
     tag="v$version"
   fi
