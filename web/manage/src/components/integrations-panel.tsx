@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { WebhookCard } from "@/components/webhook-card";
 import { HassCard } from "@/components/hass-card";
 import { Icon } from "@/components/icon";
+import { isIconName } from "@shared/icons";
 import { IconShieldCheck as ShieldCheck } from "@tabler/icons-react";
 import { Alert } from "@/components/ui/knowns/alert";
 import { Badge } from "@/components/ui/knowns/badge";
@@ -41,7 +42,43 @@ const TOOLS: Info[] = [
     name: "Antigravity",
     reads: "Reads your quota with Antigravity's \"agy /usage\" command (no question is sent to a model). Asking permission on the phone is not supported yet.",
   },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    reads: "Reads OpenCode's local session data on this Mac (project, state, cost and tokens per session). Quota is shown only for OpenCode 2.x with Go. Never reads the content of questions or answers.",
+    defaultPath: "~/.config/opencode/plugins/phonedesk.js",
+  },
+  {
+    id: "grok",
+    name: "Grok",
+    reads: "Reads Grok's local session data on this Mac (project, state, time). Grok has no usage API, so there is no quota. Never reads the content of questions or answers.",
+    defaultPath: "~/.grok/hooks/phonedesk.json",
+  },
 ];
+
+/** Copy for the switch and confirm dialog of the tools that do not use the plain permission hook. */
+const SPECIAL: Partial<Record<AiProvider, { label: string; hint: string; title: string; desc: string; fileLabel: string; on: string; off: string; bullets: string[] }>> = {
+  opencode: {
+    label: "Answer on the phone",
+    hint: "OpenCode's permission requests and questions appear on the phone, where you can answer them.",
+    title: "Answer OpenCode on the phone?",
+    desc: "PhoneDesk will install a small plugin file for OpenCode.",
+    fileLabel: "File that will be created:",
+    on: "OpenCode now asks on the phone.",
+    off: "OpenCode no longer asks on the phone. PhoneDesk's plugin was removed.",
+    bullets: ["Only this one file is created or removed. Nothing else in OpenCode's settings is changed.", "If the phone does not answer or is not connected, OpenCode asks in the terminal as usual.", "Restart OpenCode after turning this on or off."],
+  },
+  grok: {
+    label: "Show when Grok waits for you",
+    hint: "The phone is notified when Grok needs you. Grok only lets the phone be told: you cannot approve from the phone.",
+    title: "Show when Grok waits for you?",
+    desc: "PhoneDesk will install a hooks file for Grok.",
+    fileLabel: "File that will be created:",
+    on: "The phone will show when Grok waits for you.",
+    off: "PhoneDesk's Grok hooks were removed.",
+    bullets: ["Only this one file is created or removed. Nothing else in Grok's settings is changed.", "The phone can only show that Grok is waiting. Approve or answer in Grok itself.", "Restart Grok after turning this on or off."],
+  },
+};
 
 function when(iso?: string): string | undefined {
   if (!iso) return undefined;
@@ -114,7 +151,7 @@ export function IntegrationsPanel() {
     try {
       if (on) await api.enableHook(id);
       else await api.disableHook(id);
-      setNotice({ tone: "success", text: on ? t("Permission prompts on the phone are on.") : t("Permission prompts on the phone are off. PhoneDesk's hook was removed.") });
+      setNotice({ tone: "success", text: SPECIAL[id] ? t(on ? SPECIAL[id]!.on : SPECIAL[id]!.off) : on ? t("Permission prompts on the phone are on.") : t("Permission prompts on the phone are off. PhoneDesk's hook was removed.") });
       await load();
     } catch (e) {
       setNotice({ tone: "danger", text: t("Could not change the setting: {error}", { error: e instanceof Error ? e.message : String(e) }) });
@@ -126,6 +163,7 @@ export function IntegrationsPanel() {
   const target = confirm ? TOOLS.find((x) => x.id === confirm)! : null;
   const targetPath = confirm ? items?.find((i) => i.id === confirm)?.hook?.settingsPath ?? target?.defaultPath : undefined;
 
+  const special = confirm ? SPECIAL[confirm] : undefined;
   return (
     <div className="flex max-w-3xl flex-col gap-3">
       <p className="text-sm text-muted-foreground">
@@ -146,8 +184,8 @@ export function IntegrationsPanel() {
       <Dialog
         open={!!confirm}
         onOpenChange={(o) => !o && setConfirm(null)}
-        title={t("Ask permission on the phone for {name}?", { name: target?.name ?? "" })}
-        description={t("PhoneDesk will add a hook to this tool's settings file.")}
+        title={special ? t(special.title) : t("Ask permission on the phone for {name}?", { name: target?.name ?? "" })}
+        description={special ? t(special.desc) : t("PhoneDesk will add a hook to this tool's settings file.")}
         size="md"
         footer={
           <>
@@ -156,12 +194,19 @@ export function IntegrationsPanel() {
           </>
         }
       >
+        {special ? (
+          <ul className="flex list-disc flex-col gap-2 pl-5 text-sm">
+            <li>{t(special.fileLabel)} <code className="break-all rounded bg-muted px-1.5 py-0.5 text-xs">{targetPath ?? t("(the agent did not report a path)")}</code></li>
+            {special.bullets.map((b) => <li key={b}>{t(b)}</li>)}
+          </ul>
+        ) : (
         <ul className="flex list-disc flex-col gap-2 pl-5 text-sm">
           <li>{t("File that will be changed:")} <code className="break-all rounded bg-muted px-1.5 py-0.5 text-xs">{targetPath ?? t("(the agent did not report a path)")}</code></li>
           <li>{t("A backup is written before editing:")} <code className="break-all rounded bg-muted px-1.5 py-0.5 text-xs">{targetPath ? `${targetPath}.phonedesk.bak` : "*.phonedesk.bak"}</code></li>
           <li>{t("Other hooks in the file are kept. You can turn this off again at any time with the same switch.")}</li>
           <li>{t("If the phone does not answer (not connected or timed out), the tool asks for permission in the terminal as usual.")}</li>
         </ul>
+        )}
       </Dialog>
     </div>
   );
@@ -176,6 +221,9 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
   onToggle: (on: boolean) => void;
 }) {
   const hookable = tool.id !== "antigravity";
+  const special = SPECIAL[tool.id];
+  const noQuotaTool = tool.id === "opencode" || tool.id === "grok";
+  const missing = noQuotaTool && info !== undefined && !info.cliInstalled;
   const status = info?.status ?? "unknown";
   const time = when(info?.updatedAt);
   // Read-only: where the quota comes from. The agent may send a human reason; otherwise a generic note.
@@ -184,13 +232,21 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
     <Card>
       <CardContent className="flex flex-col gap-3 p-4">
         <div className="flex items-center gap-3">
-          <span className="grid size-10 place-items-center rounded-xl border bg-muted/50"><Icon name={tool.id} size={22} /></span>
+          <span className="grid size-10 place-items-center rounded-xl border bg-muted/50"><Icon name={isIconName(tool.id) ? tool.id : "sparkles"} size={22} /></span>
           <div className="min-w-0 flex-1">
             <h3 className="text-[15px] font-semibold leading-tight">{tool.name}</h3>
-            <p className="text-xs text-muted-foreground">{info?.plan ? t("{plan} plan", { plan: info.plan }) : t("Quota and sessions")}</p>
+            <p className="text-xs text-muted-foreground">
+              {noQuotaTool && info
+                ? [info.version && t("Version {v}", { v: info.version }), info.sessions !== undefined && t("{n} sessions", { n: info.sessions })].filter(Boolean).join(" · ") || t("Sessions")
+                : info?.plan ? t("{plan} plan", { plan: info.plan }) : t("Quota and sessions")}
+            </p>
           </div>
           {backendMissing ? (
             <Badge tone="neutral" dot>{t("No data")}</Badge>
+          ) : missing ? (
+            <Badge tone="neutral" dot>{t("Not installed")}</Badge>
+          ) : noQuotaTool && status !== "ok" && status !== "error" ? (
+            <Badge tone="info" dot>{t("Sessions only")}</Badge>
           ) : status === "ok" ? (
             <Badge tone="success" dot>{time ? t("Quota read · {time}", { time }) : t("Quota read")}</Badge>
           ) : status === "error" ? (
@@ -201,6 +257,7 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
         </div>
         {info && <QuotaBars info={info} />}
         {info?.error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">{info.error}</p>}
+        {noQuotaTool && !info?.windows.length && info?.quotaReason && !missing && <p className="text-xs text-muted-foreground">{t(info.quotaReason)}</p>}
         {source && (
           <p className="text-xs text-muted-foreground">
             {t("Source:")} <span className="font-medium text-foreground">{source}</span>
@@ -211,12 +268,12 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
         {hookable && (
           <div className="flex items-center justify-between gap-3 border-t pt-3">
             <div className="min-w-0">
-              <label htmlFor={`hook-${tool.id}`} className="text-[13px] font-medium">{t("Ask permission on the phone")}</label>
-              <p className="text-xs text-muted-foreground">{t("When {name} needs permission, the phone shows an Allow / Deny dialog.", { name: tool.name })}</p>
+              <label htmlFor={`hook-${tool.id}`} className="text-[13px] font-medium">{special ? t(special.label) : t("Ask permission on the phone")}</label>
+              <p className="text-xs text-muted-foreground">{special ? t(special.hint) : t("When {name} needs permission, the phone shows an Allow / Deny dialog.", { name: tool.name })}</p>
             </div>
             <Switch
               id={`hook-${tool.id}`}
-              aria-label={t("Ask permission on the phone for {name}", { name: tool.name })}
+              aria-label={special ? t(special.label) : t("Ask permission on the phone for {name}", { name: tool.name })}
               checked={!!info?.hook?.enabled}
               disabled={busy || backendMissing || !info || info.hook?.supported === false}
               onCheckedChange={onToggle}

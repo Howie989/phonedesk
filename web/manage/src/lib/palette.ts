@@ -1,3 +1,4 @@
+import { isIconName } from "@shared/icons";
 import { t } from "@/lib/i18n";
 import type { Action, AiProvider, HassEntity, Item, MacApp, Sound, WidgetKind } from "@/types";
 
@@ -44,7 +45,7 @@ export const entryLabel = (e: PaletteEntry): string => (RAW_GROUPS.has(e.group) 
 export const entryHint = (e: PaletteEntry): string => (e.hint === undefined ? "" : e.group === "app" || e.group === "home" ? e.hint : t(e.hint));
 
 const quota = (p: AiProvider, label: string, color?: string): PaletteEntry => ({
-  key: `quota-${p}`, group: "widget", path: ["AI"], label: `Quota ${label}`, hint: "Remaining quota", icon: p, size: [2, 2], tags: "quota usage limit ai",
+  key: `quota-${p}`, group: "widget", path: ["AI"], label: `Quota ${label}`, hint: "Remaining quota", icon: isIconName(p) ? p : "sparkles", size: [2, 2], tags: "quota usage limit ai",
   make: () => widget("quota", { provider: p, ...(color ? { color } : {}) }),
 });
 
@@ -60,6 +61,7 @@ export const STATIC_ENTRIES: PaletteEntry[] = [
   quota("claude", "Claude", "#d97757"),
   quota("codex", "Codex"),
   quota("antigravity", "Antigravity", "#60a5fa"),
+  quota("opencode", "OpenCode"),
   { key: "w-sessions", group: "widget", path: ["AI"], label: "AI sessions", hint: "Running sessions", icon: "sparkles", size: [2, 3], tags: "sessions", make: () => widget("sessions") },
 
   { key: "m-play", group: "media", label: "Play / Pause", icon: "play", size: [1, 1], make: () => button(t("Play / Stop"), "play", { type: "media", command: "playpause" }) },

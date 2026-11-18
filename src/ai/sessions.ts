@@ -2,7 +2,7 @@ import { basename, join } from "node:path";
 import { readdir, stat } from "node:fs/promises";
 import { claudeDir } from "./claude";
 import { codexDir, headText, tailText } from "./codex";
-import type { AiSession, SessionState, WaitingHint } from "./types";
+import type { AiSession, SessionState, SessionTool, WaitingHint } from "./types";
 
 export const WORKING_MS = 20_000;
 export const RECENT_MS = 24 * 3600_000;
@@ -124,7 +124,7 @@ export function summarizeCodex(head: string, tail: string): TailInfo {
 
 const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
-const isWaiting = (s: { tool: "claude" | "codex"; id: string; cwd?: string }, hints: WaitingHint[]) =>
+const isWaiting = (s: { tool: SessionTool; id: string; cwd?: string }, hints: WaitingHint[]) =>
   hints.some((h) => h.source === s.tool && (h.sessionId ? h.sessionId === s.id : !!h.cwd && h.cwd === s.cwd));
 
 async function claudeSessions(dir: string, now: number, hints: WaitingHint[]): Promise<AiSession[]> {

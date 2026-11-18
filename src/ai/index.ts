@@ -1,7 +1,10 @@
 import { fetchClaudeQuota } from "./claude";
 import { fetchCodexQuota } from "./codex";
 import { fetchAntigravityQuota } from "./antigravity";
-import { listSessions } from "./sessions";
+import { fetchOpencodeQuota, detectOpencode, readOpencodeSessions, activeOpencodeSessions } from "./opencode";
+import { grokQuota, readGrokSessions } from "./grok";
+import { withToolState, type ToolStates } from "./states";
+import { listSessions, MAX_SESSIONS } from "./sessions";
 import type { QuotaHistory } from "./history";
 import { t } from "../i18n";
 import type { AiProviderId, AiSession, AiSnapshot, ProviderQuota, WaitingHint } from "./types";
@@ -18,18 +21,38 @@ export interface AiSources {
   claude: (last?: ProviderQuota) => Promise<ProviderQuota>;
   codex: () => Promise<ProviderQuota>;
   antigravity: () => Promise<ProviderQuota>;
+  /** Optional: a source set without them (older tests) shows these providers as "not read". */
+  opencode?: () => Promise<ProviderQuota>;
+  grok?: () => Promise<ProviderQuota>;
   sessions: (hints: WaitingHint[]) => Promise<AiSession[]>;
 }
 
-export const realAiSources = (): AiSources => ({
+export const realAiSources = (states?: ToolStates): AiSources => ({
   claude: (last) => fetchClaudeQuota({}, last),
   codex: () => fetchCodexQuota(),
   antigravity: () => fetchAntigravityQuota(),
-  sessions: (hints) => listSessions(hints),
+  opencode: async () => fetchOpencodeQuota({ version: await detectOpencode() }),
+  grok: async () => grokQuota(),
+  sessions: async (hints) => {
+    const [base, oc, active, grok] = await Promise.all([
+      listSessions(hints),
+      Promise.resolve().then(() => readOpencodeSessions()).catch(() => [] as AiSession[]),
+      activeOpencodeSessions().catch(() => [] as string[]),
+      readGrokSessions({ states }).catch(() => [] as AiSession[]),
+    ]);
+    const opencode = oc.map((s) => {
+      let r: AiSession = active.includes(s.id) ? { ...s, state: "working", running: true } : s;
+      r = withToolState(r, states?.get("opencode", s.id));
+      const prompt = hints.some((h) => h.source === "opencode" && (h.sessionId ? h.sessionId === s.id : false));
+      return prompt ? { ...r, state: "waiting" as const, prompt: true as const } : r;
+    });
+    const grokOut = grok.map((s) => (hints.some((h) => h.source === "grok" && h.sessionId === s.id) ? { ...s, state: "waiting" as const, prompt: true as const } : s));
+        return [...base, ...opencode, ...grokOut].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
+  },
 });
 
-const ORDER: AiProviderId[] = ["claude", "codex", "antigravity"];
-const NAMES: Record<AiProviderId, string> = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" };
+const ORDER: AiProviderId[] = ["claude", "codex", "antigravity", "opencode", "grok"];
+const NAMES: Record<AiProviderId, string> = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode", grok: "Grok" };
 
 /**
  * Keeps the latest quotas and sessions; a refresh reports whether the snapshot changed.
@@ -70,7 +93,8 @@ export class AiHub {
     if (cached && this.now() - cached.at < LOCAL_REFRESH_MS) return cached.q;
     let q: ProviderQuota;
     try {
-      q = id === "claude" ? await this.src.claude(cached?.q) : await this.src[id]();
+      const fn = id === "claude" ? undefined : this.src[id];
+      q = id === "claude" ? await this.src.claude(cached?.q) : fn ? await fn() : { id, name: NAMES[id], windows: [], error: t("Reading…"), updatedAt: this.now() };
     } catch (err: any) {
       q = { id, name: NAMES[id], windows: cached?.q.windows ?? [], error: String(err?.message ?? err), updatedAt: this.now() };
     }

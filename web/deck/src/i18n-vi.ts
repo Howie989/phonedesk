@@ -184,4 +184,6 @@ export const VI: { [en: string]: string } = {
   "Cyan": "Xanh lơ",
   "Magenta": "Hồng tím",
   "Amber": "Hổ phách",
+  "No usage data from Grok": "Grok không có dữ liệu mức dùng",
+  "Question from": "Câu hỏi từ",
 }

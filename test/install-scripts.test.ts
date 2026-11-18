@@ -1,6 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,7 +18,7 @@ const sha = (f: string) => createHash("sha256").update(readFileSync(f)).digest("
 const bunPath = process.execPath;
 
 /** A "release": phonedesk-darwin-arm64/x64 are wrappers that run this checkout's real CLI, plus SHA256SUMS. */
-function makeRelease(opts: { tamper?: boolean; omit?: boolean } = {}) {
+function makeRelease(opts: { tamper?: boolean; omit?: boolean; gz?: "good" | "bad-sum" | "no-file" | "bad-content" } = {}) {
   const dir = mkdtempSync(join(sandbox, "release-"));
   const lines: string[] = [];
   for (const arch of ["arm64", "x64"]) {
@@ -24,6 +26,13 @@ function makeRelease(opts: { tamper?: boolean; omit?: boolean } = {}) {
     writeFileSync(f, `#!/bin/bash\nexec "${bunPath}" "${join(root, "src", "index.ts")}" "$@"\n`);
     chmodSync(f, 0o755);
     lines.push(`${opts.tamper ? "0".repeat(64) : sha(f)}  phonedesk-darwin-${arch}`);
+    if (opts.gz) {
+      const g = `${f}.gz`;
+      // "bad-content": a valid, correctly summed gzip whose content is not the listed binary
+      writeFileSync(g, gzipSync(opts.gz === "bad-content" ? Buffer.from("#!/bin/bash\necho phonedesk 9.9.9\n") : readFileSync(f)));
+      lines.push(`${opts.gz === "bad-sum" ? "0".repeat(64) : sha(g)}  phonedesk-darwin-${arch}.gz`);
+      if (opts.gz === "no-file") rmSync(g);
+    }
   }
   writeFileSync(join(dir, "SHA256SUMS"), (opts.omit ? "" : lines.join("\n")) + "\n");
   return dir;
@@ -47,6 +56,81 @@ function env(home: string, release: string, extra: Record<string, string> = {}) 
 const sh = (script: string, args: string[], e: Record<string, string>) => Bun.spawnSync(["bash", join(root, script), ...args], { env: e, stdout: "pipe", stderr: "pipe", stdin: new Blob([""]) });
 const out = (r: ReturnType<typeof sh>) => r.stdout.toString() + r.stderr.toString();
 const newHome = () => { const h = mkdtempSync(join(sandbox, "home-")); mkdirSync(join(h, "fake-home"), { recursive: true }); return h; };
+
+describe.skipIf(!mac)("setup.sh: compressed assets", () => {
+  const run = (release: string, home = newHome()) => ({ home, r: sh("setup.sh", ["--yes", "--no-autostart", "--no-start", "--no-open"], env(home, release)) });
+  test("a release with gzip assets: downloads the .gz with its size, verifies it, unpacks, verifies the binary too", () => {
+    const { home, r } = run(makeRelease({ gz: "good" }));
+    const text = out(r);
+    expect(r.exitCode, text).toBe(0);
+    expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
+    expect(text.match(/matches SHA256SUMS/g)?.length).toBe(2); // the .gz, then the unpacked binary
+    expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(true);
+  });
+  test("over http: the size comes from HEAD, and a download cut in the middle continues with a Range request", async () => {
+    const release = makeRelease({ gz: "good" });
+    const hits: string[] = [];
+    let cut = false;
+    const server = createServer((req, res) => {
+      const name = (req.url ?? "").slice(1);
+      const f = join(release, name);
+      if (!existsSync(f)) { res.writeHead(404).end("no"); return; }
+      const body = readFileSync(f);
+      const range = /bytes=(\d+)-/.exec(String(req.headers.range ?? ""));
+      hits.push(`${req.method} ${name}${range ? " " + req.headers.range : ""}`);
+      if (req.method === "HEAD") { res.writeHead(200, { "content-length": body.length }).end(); return; }
+      if (range) { res.writeHead(206, { "content-length": body.length - Number(range[1]), "content-range": `bytes ${range[1]}-${body.length - 1}/${body.length}` }).end(body.subarray(Number(range[1]))); return; }
+      if (name.endsWith(".gz") && !cut) {
+        cut = true; // promise everything, deliver half, then drop the connection
+        res.writeHead(200, { "content-length": body.length });
+        res.write(body.subarray(0, Math.floor(body.length / 2)));
+        setTimeout(() => res.socket?.destroy(), 50);
+        return;
+      }
+      res.writeHead(200, { "content-length": body.length }).end(body);
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    const port = (server.address() as any).port as number;
+    try {
+      const home = newHome();
+      // env() carries PHONEDESK_INSTALL_HOME: a temp home
+      const r = await Bun.spawn(["bash", join(root, "setup.sh"), "--yes", "--no-autostart", "--no-start", "--no-open"], { env: env(home, `http://127.0.0.1:${port}`), stdout: "pipe", stderr: "pipe", stdin: new Blob([""]) });
+      const text = (await new Response(r.stdout).text()) + (await new Response(r.stderr).text());
+      expect(await r.exited, text).toBe(0);
+      expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
+      expect(text).toContain("continuing where it stopped");
+      expect(hits.some((h) => h.startsWith("HEAD ") && h.includes(".gz"))).toBe(true);
+      expect(hits.some((h) => /GET .*\.gz bytes=\d+-/.test(h))).toBe(true);
+      expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(true);
+    } finally { server.close(); }
+  });
+  test("an older release without gzip assets still installs from the plain binary", () => {
+    const { r } = run(makeRelease());
+    const text = out(r);
+    expect(r.exitCode, text).toBe(0);
+    expect(text).not.toContain(".gz");
+    expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64) \(\d+ MB\)/);
+    expect(text.match(/matches SHA256SUMS/g)?.length).toBe(1);
+  });
+  test("the .gz is listed but cannot be downloaded: falls back to the plain binary", () => {
+    const { r } = run(makeRelease({ gz: "no-file" }));
+    const text = out(r);
+    expect(r.exitCode, text).toBe(0);
+    expect(text).toContain("trying the plain binary");
+  });
+  test("a .gz that does not match SHA256SUMS is refused, nothing is installed", () => {
+    const { home, r } = run(makeRelease({ gz: "bad-sum" }));
+    expect(r.exitCode).not.toBe(0);
+    expect(out(r)).toContain("does not match its SHA256SUMS entry");
+    expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
+  });
+  test("an intact .gz whose content is not the listed binary is refused after unpacking", () => {
+    const { home, r } = run(makeRelease({ gz: "bad-content" }));
+    expect(r.exitCode).not.toBe(0);
+    expect(out(r)).toContain("does not match its SHA256SUMS entry");
+    expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
+  });
+});
 
 describe.skipIf(!mac)("setup.sh", () => {
   test("downloads, verifies, installs, starts the agent, prints the phone URL and PIN; running it again updates", async () => {

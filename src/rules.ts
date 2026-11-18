@@ -1,3 +1,4 @@
+import type { SessionTool } from "./ai/types";
 import type { Rule, RuleThen, RuleWhen } from "./automation";
 
 export const RULE_COOLDOWN_MS = 60_000;
@@ -5,12 +6,12 @@ export const RULE_COOLDOWN_MS = 60_000;
 /** Everything a rule condition can look at. Feeders update it; the engine re-evaluates. */
 export interface RuleFacts {
   /** Providers with a session that finished its turn and waits for the user to type. */
-  aiInput: Set<"claude" | "codex">;
+  aiInput: Set<SessionTool>;
   /** Providers with a pending permission request or question (counted only by rules with includePrompts). */
-  aiPrompt: Set<"claude" | "codex">;
+  aiPrompt: Set<SessionTool>;
   mediaPlaying: boolean | undefined; // undefined until the first reading
   cpu: number | undefined;
-  quota: Partial<Record<"claude" | "codex" | "antigravity", number>>; // highest used percent per provider
+  quota: Partial<Record<"claude" | "codex" | "antigravity" | "opencode", number>>; // highest used percent per provider
   push: Record<string, string | number | undefined>;
   hass: Record<string, string | undefined>;
   lastPress: number | undefined; // ms; undefined = never pressed since start
@@ -154,8 +155,8 @@ export class RuleEngine {
   }
 
   // ----- feeders -----
-  setAiInput(providers: Iterable<"claude" | "codex">) { this.facts.aiInput = new Set(providers); this.evaluate(); }
-  setAiPrompts(providers: Iterable<"claude" | "codex">) { this.facts.aiPrompt = new Set(providers); this.evaluate(); }
+  setAiInput(providers: Iterable<SessionTool>) { this.facts.aiInput = new Set(providers); this.evaluate(); }
+  setAiPrompts(providers: Iterable<SessionTool>) { this.facts.aiPrompt = new Set(providers); this.evaluate(); }
   setMedia(playing: boolean) { this.facts.mediaPlaying = playing; this.evaluate(); }
   setCpu(cpu: number) { this.facts.cpu = cpu; this.evaluate(); }
   setQuota(q: RuleFacts["quota"]) { this.facts.quota = q; this.evaluate(); }

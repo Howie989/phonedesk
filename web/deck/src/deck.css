@@ -3386,3 +3386,8 @@
 .pd-ent__br input { -webkit-appearance: none; appearance: none; background: transparent; }
 .pd-ent__br input::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: rgba(139, 139, 148, 0.5); }
 .pd-ent__br input::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -7px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+
+/* rotated deck: the page strip is driven by our own touch handling (native scrolling would follow the screen's axis, not the deck's) */
+.pd-pager--rot { touch-action: none; -ms-touch-action: none; overflow-x: hidden; -webkit-scroll-snap-type: none; scroll-snap-type: none; }
+
+.pd-root--rot, .pd-root--rot * { touch-action: none; -ms-touch-action: none; }

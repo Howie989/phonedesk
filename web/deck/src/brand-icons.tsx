@@ -4,13 +4,15 @@
  */
 import { Icon } from './icon'
 
-export type Brand = 'claude' | 'codex' | 'antigravity' | 'claude-code'
+export type Brand = 'claude' | 'codex' | 'antigravity' | 'claude-code' | 'opencode' | 'grok'
 
 /** Provider id or session tool -> brand. `session` picks the Claude Code mark for tool "claude". */
 export const brandOf = (id: string, session?: boolean): Brand | null => {
   if (id === 'claude') return session ? 'claude-code' : 'claude'
   if (id === 'codex') return 'codex'
   if (id === 'antigravity') return 'antigravity'
+  if (id === 'opencode') return 'opencode'
+  if (id === 'grok') return 'grok'
   return null
 }
 

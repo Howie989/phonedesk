@@ -1,7 +1,9 @@
 import { t } from "../i18n";
-export type AiProviderId = "claude" | "codex" | "antigravity";
-export type QuotaSource = "claude-code" | "codex-sessions" | "antigravity-local";
-export const QUOTA_SOURCE: Record<AiProviderId, QuotaSource> = { claude: "claude-code", codex: "codex-sessions", antigravity: "antigravity-local" };
+export type AiProviderId = "claude" | "codex" | "antigravity" | "opencode" | "grok";
+export type QuotaSource = "claude-code" | "codex-sessions" | "antigravity-local" | "opencode-local" | "none";
+export const QUOTA_SOURCE: Record<AiProviderId, QuotaSource> = { claude: "claude-code", codex: "codex-sessions", antigravity: "antigravity-local", opencode: "opencode-local", grok: "none" };
+/** The tools whose sessions the sessions widget lists. */
+export type SessionTool = "claude" | "codex" | "opencode" | "grok";
 
 export interface QuotaWindow {
   id: string;
@@ -36,7 +38,7 @@ export type SessionState = "working" | "waiting" | "idle";
 
 export interface AiSession {
   id: string;
-  tool: "claude" | "codex";
+  tool: SessionTool;
   project: string;
   title?: string;
   model?: string;
@@ -49,6 +51,10 @@ export interface AiSession {
   prompt?: true;
   updatedAt: number;
   tokens?: number;
+  /** Listed as running by the tool itself (Grok active_sessions.json, OpenCode 2.x /api/session/active). */
+  running?: true;
+  /** Money spent, when the tool records it (OpenCode). */
+  cost?: number;
 }
 
 export interface AiSnapshot {
@@ -58,9 +64,24 @@ export interface AiSnapshot {
 
 /** What a pending permission request tells the session scanner, to mark sessions "waiting". */
 export interface WaitingHint {
-  source: "claude" | "codex";
+  source: SessionTool;
   sessionId?: string;
   cwd?: string;
+}
+
+/**
+ * Grok Build also runs the hooks it finds in ~/.claude/settings.json (compat.claude.hooks), so `phonedesk hook claude`
+ * and `claude-ask` can be fed a Grok payload. Grok's stdin uses camelCase names (hookEventName, notificationType,
+ * toolName, sessionId) and snake_case event NAMES ("pre_tool_use"); Claude Code's is snake_case keys (hook_event_name,
+ * tool_name, session_id) with CamelCase event names ("PreToolUse"). Such a payload must never reach the phone as a Claude request.
+ */
+export function isGrokPayload(o: any): boolean {
+  if (!o || typeof o !== "object") return false;
+  if ("hookEventName" in o || "notificationType" in o || "toolName" in o || "toolInput" in o) return true;
+  const ev = o.hook_event_name ?? o.hookEventName;
+  if (typeof ev === "string" && /^[a-z]+(_[a-z]+)+$/.test(ev)) return true; // "pre_tool_use"
+  if (typeof o.sessionId === "string" && typeof o.session_id !== "string") return true;
+  return typeof o.client === "string" ? /grok/i.test(o.client) : typeof o.source === "string" && /grok/i.test(o.source);
 }
 
 export const clampPercent = (n: number): number => Math.round(Math.min(100, Math.max(0, n)) * 10) / 10;

@@ -201,7 +201,7 @@ export interface Media {
   at?: number
 }
 
-export type AiProvider = 'claude' | 'codex' | 'antigravity'
+export type AiProvider = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'grok'
 
 export interface AiWindow {
   id: string
@@ -259,7 +259,7 @@ export interface AiData {
 
 export interface PermissionRequest {
   id: string
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'opencode'
   project: string
   tool: string
   summary: string
@@ -276,10 +276,16 @@ export interface QuestionItem {
   question: string
   header?: string
   options: { label: string; description?: string }[]
+  /** Claude: multiSelect. OpenCode: multiple. Either one turns the options into checkboxes. */
   multiSelect?: boolean
+  multiple?: boolean
+  /** OpenCode: false when only the listed options are allowed (no 'Other' field). Default true. */
+  custom?: boolean
 }
 export interface QuestionRequest {
   id: string
+  /** which tool is asking: 'claude' (default) or 'opencode' */
+  source?: 'claude' | 'opencode'
   project: string
   sessionId?: string
   questions: QuestionItem[]

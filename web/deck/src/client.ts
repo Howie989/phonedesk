@@ -493,12 +493,15 @@ export class DeckClient {
     return this.request({ type: 'press', pageId, itemId })
   }
   /** Answer a Claude Code question: answers {questionText: label | typed text}, other {questionText: true} for typed text; release hands it back to the terminal. */
-  answerQuestion(id: string, body: { answers?: { [q: string]: string }; other?: { [q: string]: boolean }; release?: boolean }): Promise<PressResult> {
+  answerQuestion(id: string, body: { answers?: { [q: string]: string }; other?: { [q: string]: boolean }; choices?: { [q: string]: string[] }; custom?: { [q: string]: string }; release?: boolean }): Promise<PressResult> {
     const req: { [k: string]: unknown } = { type: 'question-answer', id }
     if (body.release) req.release = true
     else {
       req.answers = body.answers || {}
       if (body.other && Object.keys(body.other).length) req.other = body.other
+      // exact labels (not joined with commas) and the typed answer, for OpenCode's [[label...]...] reply
+      if (body.choices) req.choices = body.choices
+      if (body.custom && Object.keys(body.custom).length) req.custom = body.custom
     }
     return this.request(req).then((r) => {
       if (r.ok) this.set({ questions: (this.state.questions || []).filter((q) => q.id !== id) })

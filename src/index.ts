@@ -36,6 +36,26 @@ if (argv[0] === "hook") {
     if (out) process.stdout.write(out + "\n");
     process.exit(0);
   }
+  if (source === "grok") {
+    // `phonedesk hook grok busy|idle|waiting`: Grok's own hook (~/.grok/hooks/phonedesk.json) tells the agent its state.
+    // Short and silent: it never prints and never blocks Grok.
+    const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+    const state = argv[2];
+    if (state === "busy" || state === "idle" || state === "waiting") {
+      const home = flag("--home");
+      const secret = await readFile(home ? join(home, "hook-secret") : hookSecretPath(), "utf8").then((t) => t.trim(), () => "");
+      const port = Number(flag("--port")) || Number(process.env.PHONEDESK_PORT) || 7420;
+      const { grokStateFromStdin } = await import("./ai/grok");
+      const info = grokStateFromStdin(await Bun.stdin.text());
+      if (secret && info.sessionId) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 4000);
+        await fetch(`http://127.0.0.1:${port}/api/hooks/state`, { method: "POST", headers: { "content-type": "application/json", "x-phonedesk-hook": secret }, body: JSON.stringify({ source: "grok", state, ...info }), signal: ctl.signal }).catch(() => {});
+        clearTimeout(timer);
+      }
+    }
+    process.exit(0);
+  }
   if (source === "claude" || source === "codex") {
     // The installed command carries --port/--home when the agent that installed it is not on the defaults.
     const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };

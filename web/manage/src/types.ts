@@ -26,8 +26,10 @@ export interface Sound {
 export type ActionType = Action["type"];
 export const ACTION_TYPES: ActionType[] = ["open", "hotkey", "type", "shell", "media", "volume", "page", "sound", "sound-stop", "hass", "macro"];
 
-export type AiProvider = "claude" | "codex" | "antigravity";
-export const AI_PROVIDERS: AiProvider[] = ["claude", "codex", "antigravity"];
+export type AiProvider = "claude" | "codex" | "antigravity" | "opencode" | "grok";
+export const AI_PROVIDERS: AiProvider[] = ["claude", "codex", "antigravity", "opencode", "grok"];
+/** Providers whose quota can be read (Grok has no usage API). */
+export const QUOTA_PROVIDERS: AiProvider[] = ["claude", "codex", "antigravity", "opencode"];
 
 export type ClockStyle = "digital" | "flip" | "analog" | "minimal" | "word" | "world";
 export const CLOCK_STYLES: ClockStyle[] = ["digital", "flip", "analog", "minimal", "word", "world"];
@@ -325,6 +327,13 @@ export interface Integration {
   /** Quota windows as in the WebSocket "ai" message: usedPercent 0-100. */
   windows: { id: string; label: string; usedPercent: number; resetsAt?: string }[];
   hook?: { supported: boolean; enabled: boolean; settingsPath?: string };
+  /** OpenCode and Grok: the tool is installed on this machine, its version (OpenCode), major line and running-session count. */
+  cliInstalled?: boolean;
+  version?: string;
+  line?: number;
+  sessions?: number;
+  /** Why there is no quota (e.g. "Grok has no usage API"). */
+  quotaReason?: string;
   /** Claude only: answer AskUserQuestion on the phone (separate PreToolUse hook). */
   askHook?: { enabled: boolean; idleOnly: boolean };
 }

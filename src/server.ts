@@ -26,6 +26,9 @@ import type { Stats } from "./stats";
 import type { VolumeChange, VolumeState } from "./actions";
 import { AiHub, QUOTA_SOURCE, realAiSources, type AiProviderId, type AiSources } from "./ai";
 import { agyPath } from "./ai/antigravity";
+import { ToolStates, type ToolState } from "./ai/states";
+import { detectOpencode, opencodeDataFound, installPlugin, isPluginInstalled, opencodePath, pluginPath, readOpencodeSessions, uninstallPlugin } from "./ai/opencode";
+import { grokDataFound, grokHookFile, grokPath, installGrokHook, isGrokHookInstalled, readGrokSessions, uninstallGrokHook } from "./ai/grok";
 import { PermissionBroker, ensureHookSecret, parseHookInput, secretMatches, PERMISSION_TIMEOUT_MS } from "./permissions";
 import { classifyRisk } from "./risk";
 import { askHookCommand, hookCommand, hookConfigPath, installAskHook, installHook, isAskHookInstalled, isHookInstalled, uninstallAskHook, uninstallHook, type HookTool } from "./hooks-install";
@@ -96,6 +99,9 @@ export interface StartOptions {
   hookSecret?: string;
   /** Hook config file per tool (defaults to the real ~/.claude/settings.json and ~/.codex/hooks.json: tests must override). */
   hookPaths?: Partial<Record<HookTool, string>>;
+  /** Where the OpenCode plugin / the Grok hook file go (tests point these into a temp dir). */
+  opencodePluginFile?: string;
+  grokHookFile?: string;
   /** Claude's questions on the phone: settings file, idle-time reader (seconds, null = unknown) and timeout (tests). */
   askSettingsFile?: string;
   /** Probes for GET /api/doctor (fakes in tests: the real ones ask macOS). */
@@ -136,11 +142,40 @@ export async function startServer(opts: StartOptions = {}) {
     openMediaApp: opts.deps?.openMediaApp ?? realOpenMediaApp,
     topProcesses: opts.deps?.topProcesses ?? realTopProcesses,
   };
-  const baseSources = opts.aiSources ?? realAiSources();
+  const toolStates = new ToolStates();
+  const baseSources = opts.aiSources ?? realAiSources(toolStates);
   const quotaHistory = new QuotaHistory(opts.quotaHistoryFile);
   await quotaHistory.load();
   const hub = new AiHub(baseSources, undefined, quotaHistory);
   const hookSecret = opts.hookSecret ?? (await ensureHookSecret());
+  // the integrations blocks for the two newer tools (read-only facts about the local install)
+  const opencodeBlock = async (quota: any) => {
+    const bin = opencodePath();
+    const v = await detectOpencode(undefined, bin);
+    const sessions = readOpencodeSessions().length;
+    const everything = readOpencodeSessions(undefined, Date.now(), 500, Number.POSITIVE_INFINITY);
+    const last = everything[0];
+    const noQuota = !v || v.major < 2;
+    return {
+      // a binary outside PATH (~/.opencode/bin ...) counts, and so does its data directory
+      installed: bin !== null || opencodeDataFound(), ...(bin ? { binary: bin } : {}), ...(v ? { version: v.version, line: v.major } : {}), sessions, total: everything.length,
+      ...(last ? { lastSessionAt: last.updatedAt } : {}), sessionsRule: "top-level sessions updated in the last 7 days, newest first",
+      quota: noQuota ? null : quota,
+      ...(noQuota ? { quotaReason: v ? "OpenCode 1.x has no usage limits (cost and tokens are shown per session)" : bin ? "could not read the OpenCode version" : "OpenCode was not found" } : {}),
+      plugin: { installed: await isPluginInstalled(opts.opencodePluginFile ?? pluginPath()), path: opts.opencodePluginFile ?? pluginPath() },
+    };
+  };
+  const grokBlock = async () => {
+    const bin = grokPath();
+    const recent = await readGrokSessions();
+    const all = await readGrokSessions({ windowMs: Number.POSITIVE_INFINITY, limit: 500 });
+    return {
+    installed: bin !== null || grokDataFound(), ...(bin ? { binary: bin } : {}), sessions: recent.length, total: all.length, running: recent.filter((s) => s.running).length,
+    ...(all[0] ? { lastSessionAt: all[0].updatedAt } : {}), sessionsRule: "sessions updated in the last 7 days, newest first; idle unless active_sessions.json lists them (running) or a hook reports busy/waiting",
+    quota: null, quotaReason: "Grok has no usage API",
+    hook: { installed: await isGrokHookInstalled(opts.grokHookFile ?? grokHookFile()), path: opts.grokHookFile ?? grokHookFile() },
+    };
+  };
   const pathFor = (t: HookTool) => opts.hookPaths?.[t] ?? hookConfigPath(t);
   let layout: Layout = await loadLayout();
   setLanguage(layout.theme?.language);
@@ -385,11 +420,11 @@ export async function startServer(opts: StartOptions = {}) {
     },
     opts.questionTimeoutMs ?? QUESTION_TIMEOUT_MS,
   );
-  const promptProviders = () => [...broker.list().map((r) => r.source), ...(questions.size ? ["claude" as const] : [])].filter((x): x is "claude" | "codex" => x === "claude" || x === "codex");
+  const promptProviders = () => [...broker.list().map((r) => r.source), ...questions.hints().map((h) => h.source)];
   const pushAi = () => {
     const ai = hub.snapshot();
-    const q: Partial<Record<"claude" | "codex" | "antigravity", number>> = {};
-    for (const pr of ai.providers) if (pr.windows.length) q[pr.id as "claude" | "codex" | "antigravity"] = Math.max(...pr.windows.map((w) => w.usedPercent));
+    const q: Partial<Record<"claude" | "codex" | "antigravity" | "opencode", number>> = {};
+    for (const pr of ai.providers) if (pr.windows.length && pr.id !== "grok") q[pr.id] = Math.max(...pr.windows.map((w) => w.usedPercent));
     rules.setQuota(q);
     rules.setAiInput(ai.sessions.filter((x) => x.state === "waiting" && !x.prompt).map((x) => x.tool));
     broadcast({ type: "ai", ai });
@@ -735,6 +770,23 @@ export async function startServer(opts: StartOptions = {}) {
         return json({ answers: await questions.request(input, req.signal) });
       }
 
+      // busy / idle / waiting as the tools themselves report it (Grok hooks, the OpenCode 1.x plugin)
+      if (path === "/api/hooks/state" && req.method === "POST") {
+        const denied = guardLocal(server, req, { hook: true });
+        if (denied) return denied;
+        if (!secretMatches(req.headers.get("x-phonedesk-hook"), hookSecret)) return json({ error: "bad hook secret" }, 401);
+        const b = await readBody(req);
+        if (b?.source !== "grok" && b?.source !== "opencode") return json({ error: "source must be grok or opencode" }, 400);
+        if (!["busy", "idle", "waiting"].includes(b?.state)) return json({ error: "state must be busy, idle or waiting" }, 400);
+        if (typeof b.sessionId !== "string" || !b.sessionId) {
+          // a Grok notification without a session id: nothing to attach it to
+          return json({ ok: true, ignored: true });
+        }
+        toolStates.set(b.source, b.sessionId.slice(0, 200), b.state as ToolState);
+        void refreshSessions();
+        return json({ ok: true });
+      }
+
       if (path === "/api/about" && req.method === "GET") {
         const denied = guardLocal(server, req);
         if (denied) return denied;
@@ -790,7 +842,35 @@ export async function startServer(opts: StartOptions = {}) {
           claude: { installed: await isHookInstalled(claudeFile), askHook: { installed: await isAskHookInstalled(claudeFile), ...(await askSettings.get()) }, settingsPath: claudeFile, cli: !!Bun.which("claude"), quota: quota("claude") },
           codex: { installed: await isHookInstalled(codexFile), settingsPath: codexFile, cli: !!Bun.which("codex"), quota: quota("codex") },
           antigravity: { available: agyPath() !== null, quota: quota("antigravity") },
+          opencode: await opencodeBlock(quota("opencode")),
+          grok: await grokBlock(),
         });
+      }
+
+      if (path === "/api/integrations/opencode/plugin" && (req.method === "POST" || req.method === "DELETE")) {
+        const denied = guardLocal(server, req);
+        if (denied) return denied;
+        const file = opts.opencodePluginFile ?? pluginPath();
+        try {
+          if (req.method === "DELETE") return json({ ok: true, ...(await uninstallPlugin(file)), installed: false, pluginPath: file });
+          const v = await detectOpencode();
+          const r = await installPlugin({ port: server.port as number, home: HOME, major: v?.major ?? 1 }, file);
+          return json({ ok: true, ...r, installed: true, pluginPath: file, line: v?.major ?? 1, ...(v ? {} : { note: "opencode was not found, installed the 1.x plugin" }) });
+        } catch (err: any) {
+          return json({ error: err?.message ?? String(err) }, 500);
+        }
+      }
+      if (path === "/api/integrations/grok/hook" && (req.method === "POST" || req.method === "DELETE")) {
+        const denied = guardLocal(server, req);
+        if (denied) return denied;
+        const file = opts.grokHookFile ?? grokHookFile();
+        try {
+          if (req.method === "DELETE") return json({ ok: true, ...(await uninstallGrokHook(file)), installed: false, hookPath: file });
+          const r = await installGrokHook(hookCommand("claude", { port: server.port as number, home: HOME }), file);
+          return json({ ok: true, ...r, installed: true, hookPath: file });
+        } catch (err: any) {
+          return json({ error: err?.message ?? String(err) }, 500);
+        }
       }
 
       if (path === "/api/integrations/claude/ask-hook" && (req.method === "POST" || req.method === "DELETE" || req.method === "PUT")) {

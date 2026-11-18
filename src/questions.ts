@@ -5,7 +5,7 @@ import { platform } from "./platform";
 import { macIdleSeconds } from "./platform/darwin";
 import { HOME } from "./config";
 import { projectName } from "./ai/sessions";
-import type { WaitingHint } from "./ai/types";
+import { isGrokPayload, type WaitingHint } from "./ai/types";
 import { t as tr } from "./i18n";
 
 /** The hook's own timeout is 600 s; the agent gives up a little earlier so the hook can answer "nothing" in time. */
@@ -17,6 +17,8 @@ export interface QuestionOption { label: string; description?: string }
 export interface Question { question: string; header?: string; options: QuestionOption[]; multiSelect?: boolean }
 export interface QuestionRequest {
   id: string;
+  /** Who asks: Claude Code (default) or the OpenCode plugin. */
+  source?: "claude" | "opencode";
   project: string;
   sessionId?: string;
   questions: Question[];
@@ -28,7 +30,7 @@ export type Answers = Record<string, string>;
 const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** Validates what the hook posts: {sessionId?, cwd?, questions[1-4]}. Trims every text. */
-export function parseQuestionInput(body: any): { questions: Question[]; sessionId?: string; cwd?: string } | { error: string } {
+export function parseQuestionInput(body: any): { questions: Question[]; sessionId?: string; cwd?: string; source?: "claude" | "opencode" } | { error: string } {
   if (!isObj(body)) return { error: "body must be an object" };
   const qs = body.questions;
   if (!Array.isArray(qs) || qs.length < 1 || qs.length > 4) return { error: "questions must have 1-4 items" };
@@ -49,7 +51,7 @@ export function parseQuestionInput(body: any): { questions: Question[]; sessionI
     }
     questions.push({ question: q.question.slice(0, 1000), ...(typeof q.header === "string" && q.header ? { header: q.header.slice(0, 40) } : {}), options, ...(q.multiSelect ? { multiSelect: true } : {}) });
   }
-  return { questions, ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(typeof body.cwd === "string" ? { cwd: body.cwd } : {}) };
+  return { questions, ...(body.source === "opencode" ? { source: "opencode" as const } : {}), ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(typeof body.cwd === "string" ? { cwd: body.cwd } : {}) };
 }
 
 /**
@@ -108,12 +110,13 @@ export class QuestionBroker {
   private pending = new Map<string, Pending>();
   constructor(private hooks: QuestionHooks, private timeoutMs = QUESTION_TIMEOUT_MS) {}
 
-  request(input: { questions: Question[]; sessionId?: string; cwd?: string }, signal?: AbortSignal): Promise<Answers | null> {
+  request(input: { questions: Question[]; sessionId?: string; cwd?: string; source?: "claude" | "opencode" }, signal?: AbortSignal): Promise<Answers | null> {
     if (!this.hooks.hasPhones()) return Promise.resolve(null);
     const now = Date.now();
     const req: QuestionRequest = {
       id: randomBytes(8).toString("hex"),
-      project: input.cwd ? projectName(input.cwd) : "claude",
+      ...(input.source && input.source !== "claude" ? { source: input.source } : {}),
+      project: input.cwd ? projectName(input.cwd) : input.source ?? "claude",
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       questions: input.questions,
       createdAt: now,
@@ -129,7 +132,7 @@ export class QuestionBroker {
         resolve(a);
       };
       const timer = setTimeout(() => finish(null, "timeout"), this.timeoutMs);
-      this.pending.set(req.id, { req, hint: { source: "claude", sessionId: input.sessionId, cwd: input.cwd }, settle: finish, timer });
+      this.pending.set(req.id, { req, hint: { source: input.source ?? "claude", sessionId: input.sessionId, cwd: input.cwd }, settle: finish, timer });
       signal?.addEventListener("abort", () => finish(null, "cancelled"), { once: true });
       this.hooks.notify(req);
     });
@@ -203,6 +206,7 @@ export function formatAskOutput(toolInput: Record<string, any>, answers: Answers
 export async function runAskHook(io: { stdin: string; port: number; secret: string; fetch?: typeof fetch; timeoutMs?: number }): Promise<string | null> {
   let o: any;
   try { o = JSON.parse(io.stdin); } catch { return null; }
+  if (isGrokPayload(o)) return null; // a Grok payload through ~/.claude/settings.json: print nothing
   if ((o?.tool_name ?? o?.toolName) !== "AskUserQuestion") return null;
   const toolInput = o.tool_input ?? o.toolInput;
   if (!isObj(toolInput) || !Array.isArray(toolInput.questions)) return null;

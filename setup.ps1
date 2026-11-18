@@ -148,7 +148,6 @@ function Install-PhoneDesk {
     }
 
     # ---------- 3. download and check ----------
-    Step "Downloading $asset"
     function Fetch([string]$src, [string]$dest) {
       if ($src -match '^https?://') {
         if (-not $custom -and $src -notmatch '^https://') { throw 'refusing a non-https download' }
@@ -160,17 +159,100 @@ function Install-PhoneDesk {
     }
     $dl = Join-Path $tmp $asset
     $sums = Join-Path $tmp 'SHA256SUMS'
-    try { Fetch "$base/$asset" $dl } catch { Die "could not download $base/$asset ($($_.Exception.Message))" }
     try { Fetch "$base/SHA256SUMS" $sums } catch { Die "could not download $base/SHA256SUMS ($($_.Exception.Message))" }
-    $expected = $null
-    foreach ($line in Get-Content -LiteralPath $sums) {
-      $m = [regex]::Match($line, '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
-      if ($m.Success -and $m.Groups[2].Value -eq $asset) { $expected = $m.Groups[1].Value.ToLowerInvariant(); break }
+    $sumLines = @(Get-Content -LiteralPath $sums)
+    function Expected([string]$name) {
+      foreach ($line in $sumLines) {
+        $m = [regex]::Match($line, '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
+        if ($m.Success -and $m.Groups[2].Value -eq $name) { return $m.Groups[1].Value.ToLowerInvariant() }
+      }
+      return $null
     }
-    if (-not $expected) { Die "$asset is not listed in SHA256SUMS; refusing to install it" }
-    $actual = (Get-FileHash -LiteralPath $dl -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) { Die "$asset does not match its SHA256SUMS entry (expected $expected, got $actual). Nothing was installed." }
-    Ok "$asset matches SHA256SUMS ($actual)"
+    function CheckSum([string]$file, [string]$name) {
+      $expected = Expected $name
+      if (-not $expected) { Die "$name is not listed in SHA256SUMS; refusing to install it" }
+      $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($actual -ne $expected) { Die "$name does not match its SHA256SUMS entry (expected $expected, got $actual). Nothing was installed." }
+      Ok "$name matches SHA256SUMS ($actual)"
+    }
+    function SizeNote([string]$src) {
+      $bytes = 0
+      try {
+        if ($src -match '^https?://') {
+          $rq = [Net.HttpWebRequest]::Create($src); $rq.Method = 'HEAD'; $rq.UserAgent = 'phonedesk-setup'; $rq.Timeout = 15000
+          $rs = $rq.GetResponse(); $bytes = $rs.ContentLength; $rs.Close()
+        } elseif (Test-Path -LiteralPath $src) { $bytes = (Get-Item -LiteralPath $src).Length }
+      } catch { }
+      if ($bytes -gt 0) { return " ($([math]::Ceiling($bytes / 1MB)) MB)" }
+      return ''
+    }
+    # A large download: a progress line on a terminal, quiet otherwise; when no bytes arrive for 60 s the attempt is
+    # abandoned and continued from where it stopped (Range), up to 5 times.
+    function FetchBig([string]$src, [string]$dest) {
+      if ($src -notmatch '^https?://') { Fetch $src $dest; return }
+      if (-not $custom -and $src -notmatch '^https://') { throw 'refusing a non-https download' }
+      $stall = if ($env:PHONEDESK_STALL_SECONDS) { [int]$env:PHONEDESK_STALL_SECONDS } else { 60 }
+      $show = -not [Console]::IsOutputRedirected
+      if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
+      for ($try = 1; $try -le 5; $try++) {
+        $have = if (Test-Path -LiteralPath $dest) { (Get-Item -LiteralPath $dest).Length } else { 0 }
+        $rs = $null; $in = $null; $out = $null
+        try {
+          $rq = [Net.HttpWebRequest]::Create($src); $rq.UserAgent = 'phonedesk-setup'; $rq.ReadWriteTimeout = $stall * 1000; $rq.Timeout = $stall * 1000
+          if ($have -gt 0) { $rq.AddRange([int64]$have) }
+          $rs = $rq.GetResponse()
+          $resumed = ($have -gt 0 -and [int]$rs.StatusCode -eq 206)
+          $total = if ($rs.ContentLength -gt 0) { $rs.ContentLength + $(if ($resumed) { $have } else { 0 }) } else { 0 }
+          $out = [IO.File]::Open($dest, $(if ($resumed) { 'Append' } else { 'Create' }), 'Write')
+          $in = $rs.GetResponseStream()
+          $buf = New-Object byte[] 262144
+          $done = if ($resumed) { $have } else { 0 }; $last = [DateTime]::UtcNow
+          while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $out.Write($buf, 0, $n); $done += $n
+            if ($show -and ([DateTime]::UtcNow - $last).TotalMilliseconds -gt 250) {
+              $last = [DateTime]::UtcNow
+              $pct = if ($total -gt 0) { [int](100 * $done / $total) } else { 0 }
+              Write-Host -NoNewline ("`r  {0,3}%  {1:N1} / {2:N1} MB   " -f $pct, ($done / 1MB), ($total / 1MB))
+            }
+          }
+          if ($show) { Write-Host '' }
+          return
+        } catch {
+          if ($show) { Write-Host '' }
+          $msg = $_.Exception.Message
+          if ($_.Exception.InnerException) { $msg = $_.Exception.InnerException.Message }
+          if ($msg -match '404|403|Not Found') { throw }
+          Caution "no data for a while or the connection dropped ($msg); continuing where it stopped ($try/5)"
+          Start-Sleep -Seconds 2
+        } finally { foreach ($x in @($in, $out, $rs)) { if ($x) { try { $x.Dispose() } catch { } } } }
+      }
+      Info "Hint: the download is large. Try again later, a different network or a VPN, or download $src yourself and set PHONEDESK_RELEASE_BASE to that folder."
+      throw 'download failed'
+    }
+
+    # Releases publish a gzip of the program (a third of the size); older ones only have the plain .exe.
+    $gotRaw = $false
+    if (Expected "$asset.gz") {
+      $gz = Join-Path $tmp "$asset.gz"
+      Step "Downloading $asset.gz$(SizeNote "$base/$asset.gz")"
+      try {
+        FetchBig "$base/$asset.gz" $gz
+        CheckSum $gz "$asset.gz"
+        $inS = [IO.File]::OpenRead($gz); $zs = New-Object IO.Compression.GZipStream($inS, [IO.Compression.CompressionMode]::Decompress); $outS = [IO.File]::Create($dl)
+        try { $zs.CopyTo($outS) } finally { $outS.Dispose(); $zs.Dispose(); $inS.Dispose() }
+        Remove-Item -LiteralPath $gz -Force -ErrorAction SilentlyContinue
+        $gotRaw = $true
+      } catch {
+        if ($_.Exception.Message -match 'does not match') { throw }
+        Caution "the compressed download failed ($($_.Exception.Message)); trying the plain program"
+        Remove-Item -LiteralPath $gz, $dl -Force -ErrorAction SilentlyContinue
+      }
+    }
+    if (-not $gotRaw) {
+      Step "Downloading $asset$(SizeNote "$base/$asset")"
+      try { FetchBig "$base/$asset" $dl } catch { Die "could not download $base/$asset ($($_.Exception.Message))" }
+    }
+    CheckSum $dl $asset # always the program itself, whichever way it arrived
     Unblock-File -LiteralPath $dl -ErrorAction SilentlyContinue # no "downloaded from the internet" mark: SmartScreen stays quiet
     $newVersion = $null
     $ea = $ErrorActionPreference; $ErrorActionPreference = 'Continue'

@@ -3,7 +3,7 @@ import { t } from './i18n'
 import type { DeckClient } from './client'
 import { BrandIcon, brandOf } from './brand-icons'
 import { Icon } from './icon'
-import type { PermissionRequest, ProcInfo, QuestionRequest } from './types'
+import type { PermissionRequest, ProcInfo, QuestionItem, QuestionRequest } from './types'
 
 const toMs = (v: number | string): number => (typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(v))
 
@@ -32,9 +32,9 @@ function beep() {
   }
 }
 
-const SOURCE_NAME: { [k: string]: string } = { claude: 'Claude Code', codex: 'Codex' }
-const SOURCE_MARK: { [k: string]: string } = { claude: 'C', codex: 'X' }
-const SOURCE_COLOR: { [k: string]: string } = { claude: '#d97757', codex: '#e5e7eb' }
+const SOURCE_NAME: { [k: string]: string } = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
+const SOURCE_MARK: { [k: string]: string } = { claude: 'C', codex: 'X', opencode: 'O' }
+const SOURCE_COLOR: { [k: string]: string } = { claude: '#d97757', codex: '#e5e7eb', opencode: '#38bdf8' }
 
 /** Look ported from Knowns UI Pro permission-request (autonomy/permission-request.tsx + autonomy-utils.ts: RISK_LABEL). The once/session/always scope choice is removed on purpose: only Deny / Allow. */
 const RISK_LABEL: { [k: string]: string } = { low: 'Low risk', medium: 'Medium risk', high: 'High risk' }
@@ -242,7 +242,9 @@ export function QuestionSheet(props: { client: DeckClient; qs: QuestionRequest[]
   const left = Math.max(0, Math.ceil((toMs(req.expiresAt) - now) / 1000))
   const mm = Math.floor(left / 60)
   const cd = mm + ':' + (left % 60 < 10 ? '0' : '') + (left % 60)
-  const color = SOURCE_COLOR.claude
+  const qsrc = req.source || 'claude'
+  const color = SOURCE_COLOR[qsrc] || SOURCE_COLOR.claude
+  const qname = SOURCE_NAME[qsrc] || 'Claude Code'
 
   const pick = (qi: number, label: string, multi: boolean) => {
     setErr('')
@@ -258,28 +260,33 @@ export function QuestionSheet(props: { client: DeckClient; qs: QuestionRequest[]
     setOtherOn(Object.assign({}, otherOn, { [qi]: on }))
     if (on && !multi) setSel(Object.assign({}, sel, { [qi]: [] }))
   }
+  const isMulti = (q: QuestionItem) => !!q.multiSelect || !!q.multiple
   const answered = (qi: number, multi: boolean) => {
     const txt = (otherText[qi] || '').trim()
     if (otherOn[qi] && !txt) return false
     return (sel[qi] || []).length > 0 || (!!otherOn[qi] && !!txt && (multi || true))
   }
-  const all = req.questions.every((q, i) => answered(i, !!q.multiSelect))
+  const all = req.questions.every((q, i) => answered(i, isMulti(q)))
   const send = () => {
     if (!all || busy || props.preview) return
     const answers: { [q: string]: string } = {}
     const other: { [q: string]: boolean } = {}
+    const choices: { [q: string]: string[] } = {}
+    const custom: { [q: string]: string } = {}
     req.questions.forEach((q, i) => {
       const parts = (sel[i] || []).slice()
       const txt = (otherText[i] || '').trim()
       if (otherOn[i] && txt) {
         parts.push(txt)
         other[q.question] = true
+        custom[q.question] = txt
       }
       answers[q.question] = parts.join(', ')
+      choices[q.question] = (sel[i] || []).slice()
     })
     setBusy('send')
     setErr('')
-    props.client.answerQuestion(req.id, { answers, other }).then((r) => {
+    props.client.answerQuestion(req.id, { answers, other, choices, custom }).then((r) => {
       if (!r.ok) {
         setBusy('')
         setErr(r.error || t('Could not send'))
@@ -298,15 +305,15 @@ export function QuestionSheet(props: { client: DeckClient; qs: QuestionRequest[]
     })
   }
   return (
-    <div class="pd-modal pd-modal--q" role="dialog" aria-label={t('Question from Claude Code')}>
+    <div class="pd-modal pd-modal--q" role="dialog" aria-label={t('Question from') + ' ' + qname}>
       <div class="pd-modal__panel pd-q">
         <div class="pd-perm__top">
           <span class="pd-perm__mark" style={{ color: color, borderColor: 'var(--pd-border-strong)' }}>
-            {brandOf('claude', true) ? <BrandIcon brand={brandOf('claude', true)} size={22} /> : 'C'}
+            {brandOf(qsrc, true) ? <BrandIcon brand={brandOf(qsrc, true)} size={22} /> : 'C'}
           </span>
           <div class="pd-perm__title">
             <div>
-              <b>Claude Code</b> {t('is asking you')}
+              <b>{qname}</b> {t('is asking you')}
             </div>
             <div class="pd-perm__sub">
               {req.project}
@@ -318,7 +325,8 @@ export function QuestionSheet(props: { client: DeckClient; qs: QuestionRequest[]
         </div>
         <div class="pd-q__body">
           {req.questions.map((q, qi) => {
-            const multi = !!q.multiSelect
+            const multi = isMulti(q)
+            const canOther = q.custom !== false
             return (
               <div class="pd-q__q" key={qi}>
                 <div class="pd-q__qh">
@@ -339,14 +347,14 @@ export function QuestionSheet(props: { client: DeckClient; qs: QuestionRequest[]
                       </button>
                     )
                   })}
-                  <button type="button" role={multi ? 'checkbox' : 'radio'} aria-checked={!!otherOn[qi]} class={'pd-q__o' + (otherOn[qi] ? ' pd-q__o--on' : '')} onClick={() => toggleOther(qi, multi)}>
+                  {canOther ? <button type="button" role={multi ? 'checkbox' : 'radio'} aria-checked={!!otherOn[qi]} class={'pd-q__o' + (otherOn[qi] ? ' pd-q__o--on' : '')} onClick={() => toggleOther(qi, multi)}>
                     <i class={'pd-q__m' + (multi ? ' pd-q__m--box' : '')}>{otherOn[qi] ? '✓' : ''}</i>
                     <span class="pd-q__ot">
                       <b>{t('Other…')}</b>
                       <span>{t('Type your own answer')}</span>
                     </span>
-                  </button>
-                  {otherOn[qi] ? (
+                  </button> : null}
+                  {canOther && otherOn[qi] ? (
                     <input
                       class="pd-q__in"
                       type="text"

@@ -62,7 +62,7 @@ const aliases: Record<string, string> = {
 };
 
 // Official AI marks (Tabler has no Claude / Codex / Antigravity logos).
-const brands: Record<string, string> = { claude: "claude-color", "claude-code": "claudecode-color", codex: "codex-color", antigravity: "antigravity-color", gemini: "gemini-color" };
+const brands: Record<string, string> = { claude: "claude-color", "claude-code": "claudecode-color", codex: "codex-color", antigravity: "antigravity-color", gemini: "gemini-color", opencode: "opencode", grok: "grok" };
 
 const icons: Record<string, { O: string; F?: string }> = {};
 const missing: string[] = [];

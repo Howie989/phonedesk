@@ -7,6 +7,7 @@ import { DEFAULT_COLOR, HIST_LEN, Widget, type Hist } from './widgets'
 import { DeckClient, savedDeviceName, type ClientState } from './client'
 import { setTempUnit } from './temp'
 import { shade, applyTheme, readableOn, tint } from './theme'
+import { PROVIDER_COLOR } from './ai'
 import { PermissionSheet, ProcessSheet, QuestionSheet } from './sheets'
 import type { QuestionRequest, WeatherData, PushedValue, Notice, GotoReq, HassEntity, HassState, IconAssets, AiData, Item, Layout, Media, MediaCommand, Orientation, Page, Stats, TileStyle } from './types'
 
@@ -144,6 +145,16 @@ const SAMPLE_QUESTION: QuestionRequest = {
     { header: 'Features', question: 'Which features should be enabled?', multiSelect: true, options: [{ label: 'Weather', description: 'Open-Meteo' }, { label: 'Webhook' }, { label: 'Rules', description: 'Switch pages automatically' }] },
   ],
 }
+/** OpenCode question: several options at once are allowed (multiple) and the user may type their own (custom) */
+const SAMPLE_QUESTION_OC: QuestionRequest = {
+  id: 'q2',
+  source: 'opencode',
+  project: 'phone-api',
+  sessionId: 'ses_8c1f00aa',
+  createdAt: Date.now(),
+  expiresAt: Date.now() + 9 * 60000,
+  questions: [{ header: 'Providers', question: 'Which providers should the CLI support?', multiple: true, custom: true, options: [{ label: 'OpenAI', description: 'Chat and responses API' }, { label: 'Anthropic' }, { label: 'Ollama', description: 'Local models' }] }],
+}
 const SAMPLE_NOTES: Notice[] = [
   { id: 'n1', title: 'Build finished', body: 'my-app · 24 tests passed', level: 'info', at: Date.now() - 40000 },
   { id: 'n2', title: 'Disk almost full', body: 'Data volume has 4% free', level: 'warn', at: Date.now() - 12 * 60000 },
@@ -194,12 +205,16 @@ const SAMPLE_AI: AiData = {
       ],
     },
     { id: 'codex', name: 'Codex', plan: 'Plus', windows: [{ id: 'primary', label: '30 days', usedPercent: 12, resetsAt: Date.now() + 95 * 60000 }] },
+    { id: 'opencode', name: 'OpenCode', plan: 'Go', source: 'opencode', windows: [{ id: 'rolling', label: '5 hours', usedPercent: 42, resetsAt: Date.now() + 90 * 60000 }, { id: 'weekly', label: 'Weekly', usedPercent: 18, resetsAt: Date.now() + 4 * 86400000 }, { id: 'monthly', label: 'Monthly', usedPercent: 9, resetsAt: Date.now() + 19 * 86400000 }] },
+    { id: 'grok', name: 'Grok', windows: [] },
     { id: 'antigravity', name: 'Antigravity', windows: [{ id: 'gemini-5h', label: 'Gemini 5 hours', usedPercent: 5, resetsAt: Date.now() + 3 * 3600000 }, { id: 'gemini-weekly', label: 'Gemini weekly', usedPercent: 22, resetsAt: Date.now() + 4 * 86400000 }, { id: '3p-5h', label: '3rd-party 5 hours', usedPercent: 48, resetsAt: Date.now() + 2 * 3600000 }, { id: '3p-weekly', label: '3rd-party weekly', usedPercent: 63, resetsAt: Date.now() + 5 * 86400000 }] },
   ],
   sessions: [
     { id: 's1', tool: 'claude', project: 'PhoneDesk', model: 'Opus 5.5', state: 'working', updatedAt: Date.now() - 20000 },
     { id: 's2', tool: 'codex', project: 'api-server', model: 'gpt-5', state: 'waiting', updatedAt: Date.now() - 4 * 60000 },
     { id: 's3', tool: 'claude', project: 'web-app', model: 'Sonnet 5.5', state: 'idle', updatedAt: Date.now() - 52 * 60000 },
+    { id: 's4', tool: 'opencode', project: 'phone-api', model: 'Kimi K2', state: 'working', updatedAt: Date.now() - 45000 },
+    { id: 's5', tool: 'grok', project: 'notes-app', model: 'Grok Build', state: 'waiting', updatedAt: Date.now() - 2 * 60000 },
   ],
 }
 const sampleSeries = (seed: number, base: number, amp: number) => {
@@ -346,10 +361,12 @@ function Mark(props: { size: number }) {
 /** Thin progress ring drawn along the tile edge while a sound plays (stroke-dashoffset animation; the perimeter is computed, SVG pathLength is not reliable on Safari 12). */
 /** preview flag np: comma separated, "clean" hides the empty-slot outlines (marketing screenshots): np=sound,clean */
 let pvFahrenheit = false
+let pvRotated = false
 const splitNp = (s: string): { np: string; clean: boolean } => {
   const parts = s.split(',')
   pvFahrenheit = parts.indexOf('fahrenheit') >= 0
-  const keep = (x: string) => x !== 'clean' && x !== 'fahrenheit'
+  pvRotated = parts.indexOf('rotated') >= 0
+  const keep = (x: string) => x !== 'clean' && x !== 'fahrenheit' && x !== 'rotated'
   return { np: parts.filter(keep).join(','), clean: parts.indexOf('clean') >= 0 }
 }
 
@@ -456,7 +473,7 @@ function Tile(props: {
   let wInk = ''
   let wColor = item.color
   if (item.kind === 'widget' && sty !== 'ios') {
-    const natural = item.widget === 'quota' ? (item.provider === 'codex' ? '#e5e7eb' : item.provider === 'antigravity' ? '#60a5fa' : '#d97757') : DEFAULT_COLOR[item.widget || '']
+    const natural = item.widget === 'quota' ? (PROVIDER_COLOR[item.provider || 'claude'] || '#d97757') : DEFAULT_COLOR[item.widget || '']
     const wc = item.color || natural || props.tt.accent
     if (sty === 'solid') {
       style.background = wc
@@ -832,7 +849,7 @@ export function Deck(props: DeckProps) {
     const n = splitNp(q.get('np') || '')
     return { layout: null, selectedId: null, np: n.np, clean: n.clean || q.get('clean') === '1' }
   })
-  const st: ClientState = preview ? { status: 'online', layout: pv.layout, stats: SAMPLE_STATS, media: pv.np === 'last' || pv.np === 'empty' ? null : pv.np === 'next' ? SAMPLE_MEDIA2 : SAMPLE_MEDIA, lastMedia: pv.np === 'last' ? Object.assign({}, SAMPLE_MEDIA, { playing: false, at: Date.now() - 12 * 60000 }) : null, ai: SAMPLE_AI, perms: [], questions: pv.np === 'question' ? [SAMPLE_QUESTION] : [], notice: '', sounds: pv.np === 'sound' ? sampleSounds(pv.layout) : undefined, hass: sampleHass(pv.layout, pv.np === 'ha-off'), weather: sampleWeather(pv.layout), pushed: sampleValues(pv.layout), notes: SAMPLE_NOTES, goto: pv.np === 'goto' ? { id: 'g', pageId: ((pv.layout && pv.layout.pages[1]) || { id: '' }).id, countdown: 3, reason: 'Claude needs you', at: Date.now() } : null, modeOverride: null } : live
+  const st: ClientState = preview ? { status: 'online', layout: pv.layout, stats: SAMPLE_STATS, media: pv.np === 'last' || pv.np === 'empty' ? null : pv.np === 'next' ? SAMPLE_MEDIA2 : SAMPLE_MEDIA, lastMedia: pv.np === 'last' ? Object.assign({}, SAMPLE_MEDIA, { playing: false, at: Date.now() - 12 * 60000 }) : null, ai: SAMPLE_AI, perms: [], questions: pv.np === 'question' ? [SAMPLE_QUESTION] : pv.np === 'question-oc' ? [SAMPLE_QUESTION_OC] : [], notice: '', sounds: pv.np === 'sound' ? sampleSounds(pv.layout) : undefined, hass: sampleHass(pv.layout, pv.np === 'ha-off'), weather: sampleWeather(pv.layout), pushed: sampleValues(pv.layout), notes: SAMPLE_NOTES, goto: pv.np === 'goto' ? { id: 'g', pageId: ((pv.layout && pv.layout.pages[1]) || { id: '' }).id, countdown: 3, reason: 'Claude needs you', at: Date.now() } : null, modeOverride: null } : live
   const hass: HassState | undefined = st.hass
   // a real state update replaces the optimistic one
   useEffect(() => {
@@ -899,11 +916,15 @@ export function Deck(props: DeckProps) {
   }
   const boxRef = useRef(box)
   boxRef.current = box
+  const swiped = useRef(0)
+  const touching = useRef(false)
+  const lastScroll = useRef(0)
+  const pendScroll = useRef(0)
   const vpRef = useRef(vp)
   vpRef.current = vp
 
   // rotate the whole deck 90deg when the phone is held the other way (theme.orientation)
-  const orient = st.status === 'pair' ? 'auto' : orientOf(st.layout)
+  const orient = st.status === 'pair' ? 'auto' : preview && pvRotated ? 'landscape' : orientOf(st.layout)
   const rotated = (orient === 'landscape' && vp.h > vp.w) || (orient === 'portrait' && vp.w > vp.h)
   const rootStyle: { [k: string]: string } | undefined = rotated
     ? {
@@ -1088,13 +1109,29 @@ export function Deck(props: DeckProps) {
     }
   }, [active, st.status === 'pair'])
 
-  /** Move the strip to page i without reporting it. */
-  const scrollTo = (i: number) => {
+  /**
+   * Move the strip to page i without reporting it. Never writes scrollLeft while a finger is down or the strip is still moving (fling / snap
+   * settling, Chrome Android): a write then cancels the momentum and snaps back the other way. It waits for 120 ms of scroll silence instead;
+   * a new touch cancels the pending write (the user takes over).
+   */
+  const scrollTo = (i: number, force?: boolean) => {
     const s = stripRef.current
     if (!s) return
     idxRef.current = i
     setPageIdx(i)
-    s.scrollLeft = i * s.clientWidth // instant: Safari 12 has no smooth scrollTo
+    window.clearTimeout(pendScroll.current)
+    let tries = 0
+    const put = () => {
+      const el = stripRef.current
+      if (!el) return
+      if (!force && (touching.current || Date.now() - lastScroll.current < 120) && tries++ < 40) {
+        pendScroll.current = window.setTimeout(put, 130)
+        return
+      }
+      const x = idxRef.current * el.clientWidth
+      if (Math.abs(el.scrollLeft - x) > 1) el.scrollLeft = x // instant: Safari 12 has no smooth scrollTo
+    }
+    put()
   }
   const report = (p: Page) => {
     if (preview) {
@@ -1102,8 +1139,8 @@ export function Deck(props: DeckProps) {
     } else writePage(p.id)
   }
   /** User-initiated page change. */
-  const goTo = (i: number) => {
-    scrollTo(i)
+  const goTo = (i: number, force?: boolean) => {
+    scrollTo(i, force)
     const p = pagesRef.current[i]
     if (p) report(p)
   }
@@ -1159,14 +1196,206 @@ export function Deck(props: DeckProps) {
     if (!active) return
     const snap = () => {
       const s = stripRef.current
-      if (s) s.scrollLeft = idxRef.current * s.clientWidth
+      if (!s) return
+      if (touching.current || Date.now() - lastScroll.current < 120) {
+        window.clearTimeout(pendScroll.current)
+        pendScroll.current = window.setTimeout(snap, 130)
+        return
+      }
+      const x = idxRef.current * s.clientWidth
+      if (Math.abs(s.scrollLeft - x) > 1) s.scrollLeft = x
     }
     snap()
     const t = window.setTimeout(snap, 320)
     return () => clearTimeout(t)
   }, [active, vp.w, vp.h, rotated])
 
+  // a finger on the strip: no programmatic scroll writes until it lifts (and the fling has settled)
+  useEffect(() => {
+    const s = stripRef.current
+    if (!s) return
+    const on = () => { touching.current = true; window.clearTimeout(pendScroll.current) }
+    const off = () => { touching.current = false }
+    s.addEventListener('touchstart', on, { passive: true })
+    s.addEventListener('touchend', off, { passive: true })
+    s.addEventListener('touchcancel', off, { passive: true })
+    return () => {
+      s.removeEventListener('touchstart', on)
+      s.removeEventListener('touchend', off)
+      s.removeEventListener('touchcancel', off)
+    }
+  }, [st.status, st.layout])
+
+  /**
+   * Rotated deck: the strip's scroll axis is the screen's y axis, so native touch scrolling goes the wrong way. The strip gets touch-action:none and
+   * swipes are read in the deck's own frame (client y == deck x when rotated 90deg). Left swipe in the deck = next page, with a rubber band at the ends.
+   */
+  useEffect(() => {
+    const s = stripRef.current
+    if (!s || !rotated || st.status === 'pair') return
+    let t0: { x: number; y: number; t: number; id: number } | null = null
+    let mode = 0 // 0 undecided, 1 swiping, -1 not a swipe
+    let dx = 0
+    const frame = (tt: Touch) => ({ x: tt.clientY, y: vpRef.current.w - tt.clientX })
+    const base = () => idxRef.current * s.clientWidth
+    const bounded = (v: number) => {
+      const n = pagesRef.current.length
+      const w = s.clientWidth
+      const min = 0
+      const max = Math.max(0, n - 1) * w
+      if (v < min) return min + (v - min) / 3
+      if (v > max) return max + (v - max) / 3
+      return v
+    }
+    const down = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { mode = -1; return }
+      const tg = e.target as HTMLElement | null
+      if (tg && tg.closest && tg.closest('input, select, textarea, [data-noswipe]')) { mode = -1; return }
+      const f = frame(e.touches[0])
+      t0 = { x: f.x, y: f.y, t: Date.now(), id: e.touches[0].identifier }
+      mode = 0
+      dx = 0
+    }
+    const move = (e: TouchEvent) => {
+      if (!t0 || mode < 0) return
+      let tt: Touch | null = null
+      for (let i = 0; i < e.touches.length; i++) if (e.touches[i].identifier === t0.id) tt = e.touches[i]
+      if (!tt) return
+      const f = frame(tt)
+      dx = f.x - t0.x
+      const dy = f.y - t0.y
+      if (mode === 0) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+        mode = Math.abs(dx) > Math.abs(dy) ? 1 : -1
+      }
+      if (mode === 1) {
+        e.preventDefault()
+        s.scrollLeft = bounded(base() - dx)
+      }
+    }
+    const end = () => {
+      if (!t0) return
+      const was = mode
+      const dt = Math.max(1, Date.now() - t0.t)
+      const v = dx / dt
+      t0 = null
+      mode = 0
+      if (was !== 1) return
+      swiped.current = Date.now()
+      const w = s.clientWidth
+      let i = idxRef.current
+      if (dx < -40 || (dx < -15 && v < -0.4)) i = Math.min(pagesRef.current.length - 1, i + 1)
+      else if (dx > 40 || (dx > 15 && v > 0.4)) i = Math.max(0, i - 1)
+      if (i !== idxRef.current) goTo(i, true)
+      else s.scrollLeft = i * w
+    }
+    const click = (e: Event) => {
+      if (Date.now() - swiped.current < 350) { e.stopPropagation(); e.preventDefault() }
+    }
+    s.addEventListener('touchstart', down, { passive: true })
+    s.addEventListener('touchmove', move, { passive: false })
+    s.addEventListener('touchend', end, { passive: true })
+    s.addEventListener('touchcancel', end, { passive: true })
+    s.addEventListener('click', click, true)
+    return () => {
+      s.removeEventListener('touchstart', down)
+      s.removeEventListener('touchmove', move)
+      s.removeEventListener('touchend', end)
+      s.removeEventListener('touchcancel', end)
+      s.removeEventListener('click', click, true)
+    }
+  }, [rotated, st.status, st.layout])
+
+  /**
+   * Rotated deck, every other scroller (sessions list, process sheet, question / permission sheets, HA sheets): drive scrollTop from the finger's
+   * movement in the deck's frame (screen x), with a little momentum. Horizontal swipes are left to the page strip.
+   */
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root || !rotated) return
+    let el: HTMLElement | null = null
+    let y0 = 0
+    let x0 = 0
+    let top0 = 0
+    let mode = 0
+    let lastY = 0
+    let lastT = 0
+    let vel = 0
+    let anim = 0
+    const fy = (tt: Touch) => vpRef.current.w - tt.clientX // deck y
+    const find = (n: HTMLElement | null): HTMLElement | null => {
+      while (n && n !== root) {
+        if (n.scrollHeight > n.clientHeight + 1) {
+          const oy = window.getComputedStyle(n).overflowY
+          if (oy === 'auto' || oy === 'scroll') return n
+        }
+        n = n.parentElement
+      }
+      return null
+    }
+    const down = (e: TouchEvent) => {
+      cancelAnimationFrame(anim)
+      mode = 0
+      el = null
+      if (e.touches.length !== 1) return
+      const tg = e.target as HTMLElement | null
+      if (tg && tg.closest && tg.closest('input, [data-noswipe]')) return
+      el = find(tg)
+      if (!el) return
+      y0 = fy(e.touches[0])
+      x0 = e.touches[0].clientY
+      top0 = el.scrollTop
+      lastY = y0
+      lastT = Date.now()
+      vel = 0
+    }
+    const move = (e: TouchEvent) => {
+      if (!el) return
+      const tt = e.touches[0]
+      if (!tt) return
+      const y = fy(tt)
+      if (mode === 0) {
+        const dx = Math.abs(tt.clientY - x0)
+        const dy = Math.abs(y - y0)
+        if (dx < 8 && dy < 8) return
+        mode = dy >= dx ? 1 : -1
+      }
+      if (mode !== 1) return
+      e.preventDefault()
+      const now = Date.now()
+      if (now > lastT) vel = (lastY - y) / (now - lastT)
+      lastY = y
+      lastT = now
+      el.scrollTop = top0 - (y - y0)
+    }
+    const end = () => {
+      const s = el
+      el = null
+      if (!s || mode !== 1) return
+      swiped.current = Date.now()
+      let v = Date.now() - lastT < 80 ? vel : 0
+      const step = () => {
+        s.scrollTop += v * 16
+        v *= 0.95
+        if (Math.abs(v) > 0.02) anim = requestAnimationFrame(step)
+      }
+      anim = requestAnimationFrame(step)
+    }
+    root.addEventListener('touchstart', down, { passive: true })
+    root.addEventListener('touchmove', move, { passive: false })
+    root.addEventListener('touchend', end, { passive: true })
+    root.addEventListener('touchcancel', end, { passive: true })
+    return () => {
+      cancelAnimationFrame(anim)
+      root.removeEventListener('touchstart', down)
+      root.removeEventListener('touchmove', move)
+      root.removeEventListener('touchend', end)
+      root.removeEventListener('touchcancel', end)
+    }
+  }, [rotated, st.status])
+
   const onScroll = () => {
+    lastScroll.current = Date.now()
     cancelAnimationFrame(raf.current)
     raf.current = requestAnimationFrame(() => {
       const s = stripRef.current
@@ -1497,7 +1726,7 @@ export function Deck(props: DeckProps) {
             <PairForm client={client} notice={st.notice} pin={props.pin} />
           ) : (
             <>
-              <div class="pd-pager" ref={stripRef} onScroll={onScroll}>
+              <div class={'pd-pager' + (rotated ? ' pd-pager--rot' : '')} ref={stripRef} onScroll={onScroll}>
                 {pages.length === 0 ? (
                   <div class="pd-page">
                     <div class="pd-empty">{t('Waiting for layout...')}</div>
@@ -1631,7 +1860,7 @@ export function Deck(props: DeckProps) {
           ) : null}
           {!preview && proc && st.status === 'online' ? <ProcessSheet client={client} initial={proc} onClose={() => setProc(null)} /> : null}
           {!preview && st.perms.length ? <PermissionSheet client={client} perms={st.perms} /> : null}
-          {st.questions && st.questions.length && (!preview || pv.np === 'question') ? <QuestionSheet client={client} qs={st.questions} preview={preview} /> : null}
+          {st.questions && st.questions.length && (!preview || pv.np === 'question' || pv.np === 'question-oc') ? <QuestionSheet client={client} qs={st.questions} preview={preview} /> : null}
           {gt ? (
             <div class="pd-goto" role="alertdialog" aria-label={t('Change page')}>
               <div class="pd-goto__t">

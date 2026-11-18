@@ -117,10 +117,10 @@ export type RuleWhen =
    * are NOT counted by default: they already open a sheet on whatever page is shown, so jumping pages for them is noise
    * (user feedback 2026-11-17). includePrompts: true counts them too.
    */
-  | { kind: "ai-waiting"; provider?: "claude" | "codex"; includePrompts?: boolean }
+  | { kind: "ai-waiting"; provider?: "claude" | "codex" | "opencode" | "grok"; includePrompts?: boolean }
   | { kind: "media-playing" } | { kind: "media-stopped" }
   | { kind: "cpu-above"; percent: number; forSec?: number }
-  | { kind: "quota-above"; provider: "claude" | "codex" | "antigravity"; percent: number }
+  | { kind: "quota-above"; provider: "claude" | "codex" | "antigravity" | "opencode"; percent: number }
   | { kind: "time-between"; from: string; to: string; days?: number[] } // HH:MM local, days 0=Sunday
   | { kind: "push"; key: string; op?: "=" | "!=" | ">" | "<"; value?: string | number } // a pushed value / webhook
   | { kind: "hass-state"; entityId: string; state: string }
@@ -149,14 +149,14 @@ function ruleWhen(v: any, where: string): RuleWhen {
   switch (v.kind) {
     case "ai-waiting": {
       const out: any = { kind: "ai-waiting" };
-      if (v.provider) out.provider = oneOf(v.provider, `${where}.provider`, ["claude", "codex"] as const);
+      if (v.provider) out.provider = oneOf(v.provider, `${where}.provider`, ["claude", "codex", "opencode", "grok"] as const);
       if (v.includePrompts === true) out.includePrompts = true;
       return out;
     }
     case "media-playing": return { kind: "media-playing" };
     case "media-stopped": return { kind: "media-stopped" };
     case "cpu-above": return { kind: "cpu-above", percent: n(v.percent, `${where}.percent`, 1, 100), ...(v.forSec !== undefined ? { forSec: n(v.forSec, `${where}.forSec`, 0, 3600) } : {}) };
-    case "quota-above": return { kind: "quota-above", provider: oneOf(v.provider, `${where}.provider`, ["claude", "codex", "antigravity"] as const), percent: n(v.percent, `${where}.percent`, 1, 100) };
+    case "quota-above": return { kind: "quota-above", provider: oneOf(v.provider, `${where}.provider`, ["claude", "codex", "antigravity", "opencode"] as const), percent: n(v.percent, `${where}.percent`, 1, 100) };
     case "time-between": {
       const from = s(v.from, `${where}.from`, 5), to = s(v.to, `${where}.to`, 5);
       if (!HHMM_RE.test(from) || !HHMM_RE.test(to)) fail(`${where}: from/to must be HH:MM`);

@@ -19,10 +19,18 @@ const nodeFsp = require("node:fs/promises");
 const sandbox = mkdtempSync(join(tmpdir(), "pd-test-home-"));
 process.env.PHONEDESK_HOME = sandbox;
 process.env.PHONEDESK_TEST_SANDBOX = "1";
+// the OpenCode / Grok readers look at the tools' own data: point them into the sandbox so no test ever reads (or writes) the real ones
+process.env.GROK_HOME = join(sandbox, "grok-home");
+process.env.OPENCODE_DB = join(sandbox, "opencode-data", "opencode.db");
+process.env.XDG_DATA_HOME = join(sandbox, "xdg-data");
+process.env.XDG_STATE_HOME = join(sandbox, "xdg-state");
+process.env.PHONEDESK_OPENCODE_CONFIG_DIR = join(sandbox, "opencode-config");
+process.env.PHONEDESK_OPENCODE = join(sandbox, "no-such-opencode"); // `opencode --version` never runs the real one
+process.env.PHONEDESK_GROK = join(sandbox, "no-such-grok");
 
 const real = homedir();
 const norm = (p: string): string => (process.platform === "win32" ? p.toLowerCase() : p);
-const protectedDirs = [join(real, ".phonedesk"), join(real, ".claude"), join(real, ".codex"), join(real, "Library", "LaunchAgents")]
+const protectedDirs = [join(real, ".phonedesk"), join(real, ".claude"), join(real, ".codex"), join(real, "Library", "LaunchAgents"), join(real, ".grok"), join(real, ".config", "opencode"), join(real, ".local", "share", "opencode"), join(real, ".local", "state", "opencode")]
   .flatMap((d) => { try { return [d, realpathSync(d)]; } catch { return [d]; } })
   .map((d) => norm(resolve(d)));
 (globalThis as any).__pdProtectedDirs = protectedDirs;

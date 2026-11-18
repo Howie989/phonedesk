@@ -291,7 +291,7 @@ describe("AI, permissions, integrations, processes", () => {
     const c = connect(token);
     // earlier tests may already have loaded the hub, so the connect snapshot can be complete
     const loaded = await c.next((m) => m.type === "ai" && m.ai.providers[0].windows.length > 0 && m.ai.sessions.length > 0);
-    expect(loaded.ai.providers.map((p: any) => p.id)).toEqual(["claude", "codex", "antigravity"]);
+    expect(loaded.ai.providers.map((p: any) => p.id)).toEqual(["claude", "codex", "antigravity", "opencode", "grok"]);
     expect(loaded.ai.providers[0].windows[0].usedPercent).toBe(10);
     expect(loaded.ai.sessions[0]).toMatchObject({ tool: "claude", project: "app", state: "idle" });
     fakeSessions = [{ ...fakeSessions[0], state: "working" }];

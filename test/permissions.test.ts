@@ -123,3 +123,35 @@ describe("hook plumbing", () => {
     expect(secretMatches(null, a)).toBe(false);
   });
 });
+
+describe("Grok payloads through ~/.claude/settings.json (Grok compat) are ignored", () => {
+  const grokShapes = [
+    { hookEventName: "pre_tool_use", sessionId: "g1", cwd: "/p", toolName: "Bash", toolInput: { command: "rm -rf x" } },
+    { hook_event_name: "pre_tool_use", session_id: "g1", cwd: "/p", tool_name: "Bash", tool_input: { command: "ls" } },
+    { hookEventName: "notification", notificationType: "permission_prompt", sessionId: "g1" },
+    { sessionId: "g1", cwd: "/p", toolName: "AskUserQuestion", toolInput: { questions: [{ question: "q?", options: [{ label: "a" }] }] } },
+  ];
+  test("hook claude / codex: nothing is sent and nothing is printed", async () => {
+    let calls = 0;
+    const fetchFn = (async () => { calls++; return Response.json({ decision: "allow" }); }) as any;
+    for (const g of grokShapes) {
+      expect(await runHook("claude", { stdin: JSON.stringify(g), port: 1, secret: "s", fetch: fetchFn })).toBeNull();
+      expect(await runHook("codex", { stdin: JSON.stringify(g), port: 1, secret: "s", fetch: fetchFn })).toBeNull();
+    }
+    expect(calls).toBe(0);
+  });
+  test("hook claude-ask: the same", async () => {
+    const { runAskHook } = await import("../src/questions");
+    let calls = 0;
+    const fetchFn = (async () => { calls++; return Response.json({ answers: { "q?": "a" } }); }) as any;
+    for (const g of grokShapes) expect(await runAskHook({ stdin: JSON.stringify(g), port: 1, secret: "s", fetch: fetchFn })).toBeNull();
+    expect(calls).toBe(0);
+  });
+  test("a real Claude payload still goes through", async () => {
+    let calls = 0;
+    const fetchFn = (async () => { calls++; return Response.json({ decision: "allow" }); }) as any;
+    const claude = { session_id: "c1", hook_event_name: "PermissionRequest", cwd: "/p", tool_name: "Bash", tool_input: { command: "ls" } };
+    expect(await runHook("claude", { stdin: JSON.stringify(claude), port: 1, secret: "s", fetch: fetchFn })).toContain("allow");
+    expect(calls).toBe(1);
+  });
+});

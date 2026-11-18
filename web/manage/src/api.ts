@@ -44,7 +44,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
-const NAMES: Record<AiProvider, string> = { claude: "Claude Code", codex: "Codex", antigravity: "Antigravity" };
+const NAMES: Record<AiProvider, string> = { claude: "Claude Code", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode", grok: "Grok" };
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 
@@ -55,6 +55,9 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v 
  */
 const isoOf = (v: unknown): string | undefined =>
   typeof v === "number" && Number.isFinite(v) ? new Date(v < 1e12 ? v * 1000 : v).toISOString() : typeof v === "string" ? v : undefined;
+
+/** OpenCode installs a plugin, the others a hook. */
+const hookUrl = (id: AiProvider) => `/api/integrations/${id}/${id === "opencode" ? "plugin" : "hook"}`;
 
 export function normalizeIntegrations(raw: unknown): Integration[] {
   const r0 = rec(raw);
@@ -71,7 +74,9 @@ export function normalizeIntegrations(raw: unknown): Integration[] {
     const st = str(e.status) ?? str(quota.status);
     const okFlag = typeof e.ok === "boolean" ? e.ok : typeof quota.ok === "boolean" ? quota.ok : undefined;
     const status: Integration["status"] = error || st === "error" || okFlag === false ? "error" : st === "ok" || okFlag === true || (Array.isArray(e.windows) && e.windows.length > 0) ? "ok" : "unknown";
-    const h = e.hook === undefined || e.hook === null ? undefined : rec(e.hook);
+    // OpenCode reports its plugin under "plugin", Grok its hooks file under "hook"; both are installed/path pairs.
+    const hookRaw = id === "opencode" ? e.plugin : e.hook;
+    const h = hookRaw === undefined || hookRaw === null ? undefined : rec(hookRaw);
     const settingsPath = str(h?.settingsPath) ?? str(h?.path) ?? str(e.settingsPath);
     const hook = h || settingsPath || e.hookSupported !== undefined
       ? {
@@ -98,7 +103,7 @@ export function normalizeIntegrations(raw: unknown): Integration[] {
     const srcRaw = e.source ?? quota.source;
     const source = typeof srcRaw === "string" && srcRaw ? (srcRaw as Integration["source"]) : undefined;
     const reason = str(e.reason) ?? str(quota.reason) ?? str(e.sourceNote);
-    out.push({ windows, source, id, name: str(e.name) ?? NAMES[id], status, error, plan: str(e.plan) ?? str(quota.plan), updatedAt: isoOf(e.updatedAt) ?? isoOf(quota.updatedAt), hook, ...(reason ? { reason } : {}), ...(askHook ? { askHook } : {}) });
+    out.push({ windows, source, id, name: str(e.name) ?? NAMES[id], status, error, plan: str(e.plan) ?? str(quota.plan), updatedAt: isoOf(e.updatedAt) ?? isoOf(quota.updatedAt), hook, ...(reason ? { reason } : {}), ...(id === "opencode" || id === "grok" ? { cliInstalled: e.installed === true, version: str(e.version), line: typeof e.line === "number" ? e.line : undefined, sessions: typeof e.sessions === "number" ? e.sessions : undefined, quotaReason: str(e.quotaReason) } : {}), ...(askHook ? { askHook } : {}) });
   }
   return out;
 }
@@ -260,11 +265,11 @@ export const api = {
     // An old agent may still send an "openusage" block: it is ignored.
     return { integrations: normalizeIntegrations(raw) };
   },
-  enableHook: (id: AiProvider) => request<unknown>(`/api/integrations/${id}/hook`, json("POST")),
+  enableHook: (id: AiProvider) => request<unknown>(hookUrl(id), json("POST")),
   /** Installs (or updates) the AskUserQuestion hook; idleOnly = only when the user has been away for a minute. */
   enableAskHook: (idleOnly: boolean) => request<unknown>("/api/integrations/claude/ask-hook", json("POST", { idleOnly })),
   disableAskHook: () => request<unknown>("/api/integrations/claude/ask-hook", { method: "DELETE" }),
-  disableHook: (id: AiProvider) => request<unknown>(`/api/integrations/${id}/hook`, { method: "DELETE" }),
+  disableHook: (id: AiProvider) => request<unknown>(hookUrl(id), { method: "DELETE" }),
   getLayout: () => request<Layout>("/api/layout"),
   putLayout: (layout: Layout) => request<unknown>("/api/layout", json("PUT", layout)),
   getDevices: () => request<DeviceInfo[]>("/api/devices"),

@@ -115,6 +115,47 @@ fetch() {
   esac
 }
 
+listed() { # listed name sums-file
+  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) found = 1 } END { exit !found }' "$2"
+}
+
+# " (63 MB)" for a URL or a file, or nothing when the size is unknown
+size_note() {
+  local src="$1" bytes=""
+  case "$src" in
+    http://*|https://*) have curl && bytes="$(curl -fsSLI --max-time 15 -A phonedesk-setup "$src" 2>/dev/null | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')" ;;
+    *) [ -f "$src" ] && bytes="$(wc -c <"$src" | tr -d ' ')" ;;
+  esac
+  case "$bytes" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$bytes" -gt 0 ] || return 0
+  printf ' (%s MB)' "$(( (bytes + 1048575) / 1048576 ))"
+}
+
+# fetch_big <url-or-path> <file>: a large download. Shows a progress bar on a terminal; when no bytes arrive for 60 s it
+# gives up on that attempt and continues from where it stopped (up to 5 times).
+fetch_big() {
+  local src="$1" dest="$2" i=0 quiet=-sS proto code
+  case "$src" in
+    http://*|https://*) ;;
+    *) fetch "$src" "$dest"; return ;;
+  esac
+  have curl || die "curl is required"
+  if [ -t 2 ]; then quiet=--progress-bar; fi
+  if [ "$base_is_custom" = 1 ]; then proto=(--proto '=http,https'); else proto=(--proto '=https' --proto-redir '=https'); fi
+  while [ "$i" -lt 5 ]; do
+    code=0
+    curl -fL "$quiet" "${proto[@]}" -A phonedesk-setup --speed-limit 1024 --speed-time "${PHONEDESK_STALL_SECONDS:-60}" -C - -o "$dest" "$src" || code=$?
+    [ "$code" = 0 ] && return 0
+    i=$((i + 1))
+    if [ "$code" = 28 ]; then caution "no data for ${PHONEDESK_STALL_SECONDS:-60} s (a slow or blocked connection to GitHub); continuing where it stopped ($i/5)";
+    else caution "the download was interrupted (curl exit $code); continuing where it stopped ($i/5)"; fi
+    [ "$code" = 22 ] && return 1 # an HTTP error (404 ...): retrying the same URL will not help
+    sleep 2
+  done
+  info "Hint: the download is large. Try again later, a different network or a VPN, or download $src yourself and run with PHONEDESK_RELEASE_BASE=<folder>."
+  return 1
+}
+
 # ---------- where things go ----------
 home_dir="${PHONEDESK_INSTALL_HOME:-$HOME}"
 data_dir="$home_dir/.phonedesk"
@@ -163,10 +204,28 @@ else
 fi
 
 # ---------- 3. download and check ----------
-step "Downloading $asset"
-fetch "$base/$asset" "$tmp/$asset" || die "could not download $base/$asset"
 fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "could not download $base/SHA256SUMS"
-check_sum "$tmp/$asset" "$tmp/SHA256SUMS"
+# Releases publish a gzip of every binary (about a third of the size). Use it when SHA256SUMS lists it and it downloads;
+# older releases only have the raw binary, so fall back to that.
+got_raw=0
+if listed "$asset.gz" "$tmp/SHA256SUMS"; then
+  step "Downloading $asset.gz$(size_note "$base/$asset.gz")"
+  if fetch_big "$base/$asset.gz" "$tmp/$asset.gz"; then
+    check_sum "$tmp/$asset.gz" "$tmp/SHA256SUMS"
+    have gzip || die "gzip is required to unpack the download"
+    gzip -dc "$tmp/$asset.gz" >"$tmp/$asset" || die "could not unpack $asset.gz"
+    rm -f "$tmp/$asset.gz"
+    got_raw=1
+  else
+    caution "the compressed download failed; trying the plain binary"
+    rm -f "$tmp/$asset.gz"
+  fi
+fi
+if [ "$got_raw" = 0 ]; then
+  step "Downloading $asset$(size_note "$base/$asset")"
+  fetch_big "$base/$asset" "$tmp/$asset" || die "could not download $base/$asset"
+fi
+check_sum "$tmp/$asset" "$tmp/SHA256SUMS" # always the binary itself, whichever way it arrived
 chmod 755 "$tmp/$asset"
 if have xattr; then xattr -d com.apple.quarantine "$tmp/$asset" 2>/dev/null || true; fi
 # release binaries are ad-hoc signed in CI; sign again here so the signature is valid for this exact file on this Mac

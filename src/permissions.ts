@@ -3,13 +3,13 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HOME } from "./config";
 import { projectName } from "./ai/sessions";
-import type { WaitingHint } from "./ai/types";
+import { isGrokPayload, type WaitingHint } from "./ai/types";
 import type { Risk } from "./risk";
 import { t } from "./i18n";
 
 export const PERMISSION_TIMEOUT_MS = 55_000;
 export const SUMMARY_MAX = 300;
-export type PermissionSource = "claude" | "codex";
+export type PermissionSource = "claude" | "codex" | "opencode";
 export type Decision = "allow" | "deny";
 
 export interface PermissionRequest {
@@ -168,7 +168,7 @@ export function secretMatches(given: string | null | undefined, secret: string):
 /** Validates the body posted by `phonedesk hook`. */
 export function parseHookInput(body: any): HookInput | { error: string } {
   if (!body || typeof body !== "object") return { error: "body must be an object" };
-  if (body.source !== "claude" && body.source !== "codex") return { error: "source must be claude or codex" };
+  if (body.source !== "claude" && body.source !== "codex" && body.source !== "opencode") return { error: "source must be claude, codex or opencode" };
   if (typeof body.toolName !== "string" || !body.toolName) return { error: "toolName is required" };
   return {
     source: body.source,
@@ -196,6 +196,7 @@ export function formatHookOutput(decision: Decision | null | undefined): string 
 export function hookInputFromStdin(source: PermissionSource, stdin: string): HookInput | null {
   try {
     const o = JSON.parse(stdin);
+    if (isGrokPayload(o)) return null; // Grok reads ~/.claude/settings.json too: never forward its tool calls as Claude's
     const toolName = o?.tool_name ?? o?.toolName;
     if (typeof toolName !== "string" || !toolName) return null;
     return {

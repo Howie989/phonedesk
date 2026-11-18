@@ -26,8 +26,8 @@ export interface AiWidgetProps {
   waitingProjects: string[]
 }
 
-const PROVIDER_COLOR: { [k: string]: string } = { claude: '#d97757', codex: '#e5e7eb', antigravity: '#60a5fa' }
-const PROVIDER_NAME: { [k: string]: string } = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' }
+export const PROVIDER_COLOR: { [k: string]: string } = { claude: '#d97757', codex: '#e5e7eb', antigravity: '#60a5fa', opencode: '#38bdf8', grok: '#a1a1aa' }
+export const PROVIDER_NAME: { [k: string]: string } = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', opencode: 'OpenCode', grok: 'Grok' }
 
 const toMs = (v: number | string | undefined): number | null => {
   if (v === undefined || v === null || v === '') return null
@@ -707,9 +707,9 @@ export function QuotaWidget(props: AiWidgetProps) {
           </span>
         ) : null}
       </div>
-      {!info ? <div class="pd-qerr">{t('No data yet')}</div> : null}
+      {id === 'grok' && !wins.length && !needsLogin ? <div class="pd-qerr pd-qerr--mute">{t('No usage data from Grok')}</div> : !info ? <div class="pd-qerr">{t('No data yet')}</div> : null}
       {needsLogin ? <div class="pd-qerr pd-qerr--warn">{t('Sign in again on your computer')}</div> : null}
-      {info && info.error && !needsLogin ? <div class="pd-qerr">{info.error}</div> : null}
+      {info && info.error && !needsLogin && id !== 'grok' ? <div class="pd-qerr">{info.error}</div> : null}
       {noPicked && !needsLogin ? <div class="pd-qerr pd-qerr--mute">{t('No data for this window yet')}</div> : null}
       {body ? <div ref={tallish ? bodyRef : undefined} class={'pd-qbody' + (chart === 'meter' || chart === 'bars' || chart === 'history' || tallish ? ' pd-qbody--fill' : '')}>{body}</div> : null}
       {extras.length && roomy ? (

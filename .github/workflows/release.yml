@@ -60,8 +60,11 @@ jobs:
           done
           bun build src/index.ts --compile --target=bun-windows-x64 --outfile dist/phonedesk-windows-x64.exe
           cd dist
-          shasum -a 256 phonedesk-darwin-arm64 phonedesk-darwin-x64 phonedesk-windows-x64.exe > SHA256SUMS
+          # gzip copies (about a third of the size): the installers prefer them and unpack + verify the binary too
+          for f in phonedesk-darwin-arm64 phonedesk-darwin-x64 phonedesk-windows-x64.exe; do gzip -9 -n -k "$f"; done
+          shasum -a 256 phonedesk-darwin-arm64 phonedesk-darwin-x64 phonedesk-windows-x64.exe phonedesk-darwin-arm64.gz phonedesk-darwin-x64.gz phonedesk-windows-x64.exe.gz > SHA256SUMS
           cat SHA256SUMS
+          ls -l phonedesk-*
 
       - name: The arm64 binary reports the tagged version
         run: |
@@ -72,5 +75,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/phonedesk-darwin-arm64 dist/phonedesk-darwin-x64 dist/phonedesk-windows-x64.exe dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/phonedesk-darwin-arm64 dist/phonedesk-darwin-x64 dist/phonedesk-windows-x64.exe dist/phonedesk-darwin-arm64.gz dist/phonedesk-darwin-x64.gz dist/phonedesk-windows-x64.exe.gz dist/SHA256SUMS \
             --title "PhoneDesk $GITHUB_REF_NAME" --generate-notes
