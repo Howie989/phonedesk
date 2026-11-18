@@ -66,7 +66,7 @@ jobs:
       - name: The arm64 binary reports the tagged version
         run: |
           got="$(./dist/phonedesk-darwin-arm64 --version)"
-          [ "$got" = "phonedesk ${GITHUB_REF_NAME#v}" ] || { echo "::error::binary printed '$got'"; exit 1; }
+          [ "${got%% (*}" = "phonedesk ${GITHUB_REF_NAME#v}" ] || { echo "::error::binary printed '$got'"; exit 1; }
 
       - name: Publish the release
         env:
