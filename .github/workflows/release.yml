@@ -76,4 +76,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/phonedesk-darwin-arm64 dist/phonedesk-darwin-x64 dist/phonedesk-windows-x64.exe dist/phonedesk-darwin-arm64.gz dist/phonedesk-darwin-x64.gz dist/phonedesk-windows-x64.exe.gz dist/SHA256SUMS \
-            --title "PhoneDesk $GITHUB_REF_NAME" --generate-notes
+            --title "PhoneDesk $GITHUB_REF_NAME" --notes-file .github/release-notes.md --generate-notes
