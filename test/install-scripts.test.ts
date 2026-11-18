@@ -47,7 +47,7 @@ async function freePort(): Promise<number> {
 
 function env(home: string, release: string, extra: Record<string, string> = {}) {
   return {
-    PATH: process.env.PATH!, TMPDIR: sandbox,
+    PATH: process.env.PATH!, TMPDIR: sandbox, SHELL: "/bin/zsh", // the PATH step picks the rc file from $SHELL: pin it so CI (bash) matches
     HOME: join(home, "fake-home"), // anything that falls back to $HOME stays in the sandbox too
     PHONEDESK_INSTALL_HOME: home, PHONEDESK_RELEASE_BASE: release, PHONEDESK_LAUNCHCTL: "echo",
     ...extra,
