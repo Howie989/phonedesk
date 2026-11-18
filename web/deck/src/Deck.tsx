@@ -206,7 +206,7 @@ const SAMPLE_AI: AiData = {
     },
     { id: 'codex', name: 'Codex', plan: 'Plus', windows: [{ id: 'primary', label: '30 days', usedPercent: 12, resetsAt: Date.now() + 95 * 60000 }] },
     { id: 'opencode', name: 'OpenCode', plan: 'Go', source: 'opencode', windows: [{ id: 'rolling', label: '5 hours', usedPercent: 42, resetsAt: Date.now() + 90 * 60000 }, { id: 'weekly', label: 'Weekly', usedPercent: 18, resetsAt: Date.now() + 4 * 86400000 }, { id: 'monthly', label: 'Monthly', usedPercent: 9, resetsAt: Date.now() + 19 * 86400000 }] },
-    { id: 'grok', name: 'Grok', windows: [] },
+    { id: 'grok', name: 'Grok', plan: 'SuperGrok', source: 'grok-agent', extras: [{ label: 'Prepaid balance', value: 8.5, unit: 'USD' }], windows: [{ id: 'weekly', label: 'Weekly credits', usedPercent: 37, resetsAt: Date.now() + 3 * 86400000 }] },
     { id: 'antigravity', name: 'Antigravity', windows: [{ id: 'gemini-5h', label: 'Gemini 5 hours', usedPercent: 5, resetsAt: Date.now() + 3 * 3600000 }, { id: 'gemini-weekly', label: 'Gemini weekly', usedPercent: 22, resetsAt: Date.now() + 4 * 86400000 }, { id: '3p-5h', label: '3rd-party 5 hours', usedPercent: 48, resetsAt: Date.now() + 2 * 3600000 }, { id: '3p-weekly', label: '3rd-party weekly', usedPercent: 63, resetsAt: Date.now() + 5 * 86400000 }] },
   ],
   sessions: [

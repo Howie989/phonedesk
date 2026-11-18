@@ -15,6 +15,7 @@
 #   $env:PHONEDESK_NO_OPEN=1        do not open the management page in the browser
 #   $env:PHONEDESK_NO_FIREWALL=1    do not offer the Windows Firewall rule
 #   $env:PHONEDESK_NO_PATH=1        do not add PhoneDesk to your PATH
+#   $env:PHONEDESK_FORCE=1          reinstall even when this version is already installed and intact
 #   $env:PHONEDESK_DRY_RUN=1        download and verify, show what would happen, change nothing
 # Or save the file, dot-source it with $env:PHONEDESK_SETUP_NORUN=1 and call Install-PhoneDesk -Yes -Port 7421 ...
 #
@@ -27,7 +28,7 @@ function Install-PhoneDesk {
   [CmdletBinding()]
   param(
     [switch]$Yes, [string]$Version = '', [int]$Port = 7420, [switch]$NoAutostart, [switch]$NoStart,
-    [switch]$NoOpen, [switch]$NoFirewall, [switch]$NoPath, [switch]$DryRun
+    [switch]$NoOpen, [switch]$NoFirewall, [switch]$NoPath, [switch]$DryRun, [switch]$Force
   )
   $ErrorActionPreference = 'Stop'
   $ProgressPreference = 'SilentlyContinue' # the progress bar makes Invoke-WebRequest very slow in Windows PowerShell 5.1
@@ -76,6 +77,8 @@ function Install-PhoneDesk {
       $dataDir = Join-Path $env:USERPROFILE '.phonedesk'
     }
     $exe = Join-Path $binDir 'phonedesk.exe'
+    $svcDir = if ($relocated) { Join-Path $installHome 'service' } else { Join-Path $local 'PhoneDesk' }
+    $releaseFile = Join-Path $binDir '.release'
     $logDir = Join-Path $dataDir 'logs'
     # with a relocated install (tests) keep every file the program touches inside it
     $childEnv = @{ PHONEDESK_HOME = $dataDir }
@@ -254,6 +257,27 @@ function Install-PhoneDesk {
       throw 'download failed'
     }
 
+    function Sha([string]$f) { return (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant() }
+    function VerOf([string]$line) { if ($line -match '^phonedesk (\S+)') { return $Matches[1] }; return '' }
+    function RunVersion([string]$file) {
+      $ea = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { return (& $file --version 2>$null | Select-Object -First 1) } catch { return $null } finally { $ErrorActionPreference = $ea }
+    }
+    # Already installed and intact? Setup leaves .release next to the program: the sha256 of the release file it installed and of the
+    # file on disk. Same release sum + untouched file + it runs = nothing to download.
+    $oldVersion = $null
+    if (Test-Path -LiteralPath $exe) { $oldVersion = RunVersion $exe }
+    $upToDate = $false
+    $wantRaw = Expected $asset
+    if (-not $Force -and $oldVersion -and $wantRaw -and (Test-Path -LiteralPath $releaseFile)) {
+      $rel = Get-Content -LiteralPath $releaseFile -Raw
+      if ($rel -match '(?m)^raw=([0-9a-f]+) installed=([0-9a-f]+)' -and $Matches[1] -eq $wantRaw -and $Matches[2] -eq (Sha $exe)) { $upToDate = $true }
+    }
+    if ($upToDate) {
+      $newVersion = $oldVersion
+      Ok "PhoneDesk $(VerOf $oldVersion) is already installed (checksum matches); nothing to download"
+    }
+    if (-not $upToDate) {
     # Releases publish a gzip of the program (a third of the size); older ones only have the plain .exe.
     $gotRaw = $false
     if (Expected "$asset.gz") {
@@ -284,14 +308,13 @@ function Install-PhoneDesk {
     $ErrorActionPreference = $ea
     if (-not $newVersion) { Die 'the downloaded program does not run on this computer (it printed no version)' }
     Ok $newVersion
-    $oldVersion = $null
-    if (Test-Path -LiteralPath $exe) { $ea = $ErrorActionPreference; $ErrorActionPreference = 'Continue'; try { $oldVersion = (& $exe --version 2>$null | Select-Object -First 1) } catch { }; $ErrorActionPreference = $ea }
+    } # not up to date
 
     # ---------- 4. install ----------
     Step 'Installing'
     Info "program:  $exe"
     Info "your data stays in $dataDir"
-    if ($oldVersion) { Info "replacing $oldVersion" }
+    if ($upToDate) { Info "up to date: $oldVersion" } elseif ($oldVersion) { Info "replacing $oldVersion" }
     if ($DryRun) {
       Caution 'dry run: nothing was installed, started or changed'
       if (-not $NoAutostart) { Info 'would create the scheduled task "PhoneDesk" (start at logon)' }
@@ -299,9 +322,11 @@ function Install-PhoneDesk {
       Info "would start PhoneDesk on port $Port and open http://localhost:$Port/manage/"
       return
     }
+    $binState = 'already set'
+    $svcBefore = (Test-Path -LiteralPath (Join-Path $svcDir 'launch.vbs'))
+    if (-not $upToDate) {
     if (-not (Ask "Install PhoneDesk to ${exe}?" $true)) { Die 'cancelled; nothing was installed' }
-    $autostart = -not $NoAutostart
-    if ($autostart) { if (-not (Ask 'Start PhoneDesk automatically when you sign in?' $true)) { $autostart = $false } }
+    $binState = if ($oldVersion) { "updated ($(VerOf $oldVersion) -> $(VerOf $newVersion))" } else { 'installed' }
 
     # stop what is running so the file can be replaced: the scheduled task first, then a manually started agent
     if (Test-Path -LiteralPath $exe) {
@@ -313,23 +338,43 @@ function Install-PhoneDesk {
     $staged = Join-Path $binDir '.phonedesk.new.exe'
     Copy-Item -LiteralPath $dl -Destination $staged -Force
     Move-Item -LiteralPath $staged -Destination $exe -Force
+    "raw=$(Expected $asset) installed=$(Sha $exe)" | Set-Content -LiteralPath $releaseFile -Encoding ascii
     Ok "installed $newVersion"
+    } # not up to date
 
+    $autostart = -not $NoAutostart
     # PATH (user level), so `phonedesk doctor` works in any terminal
+    $pathState = 'skipped'
     if (-not $NoPath -and -not $relocated) {
       $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
       $parts = @($userPath -split ';' | Where-Object { $_ })
       if ($parts -notcontains $binDir) {
         # automatic (opt out with PHONEDESK_NO_PATH=1); SetEnvironmentVariable writes HKCU\Environment and broadcasts WM_SETTINGCHANGE
         [Environment]::SetEnvironmentVariable('Path', (($parts + $binDir) -join ';'), 'User')
-        $pathAdded = $true
+        $pathAdded = $true; $pathState = 'installed'
         Ok 'added PhoneDesk to your PATH'
-      } else { $pathAdded = $true; Info 'PhoneDesk is already on your PATH' }
+      } else { $pathState = 'already set'; Info 'PhoneDesk is already on your PATH' }
       if ($env:Path -notlike "*$binDir*") { $env:Path = "$env:Path;$binDir" } # this PowerShell window too
     }
 
+    # the background service: keep it when it is the one we wrote (checksum recorded) for this port, otherwise (re)install
+    $svcState = 'skipped'
+    $launcher = Join-Path $svcDir 'launch.vbs'
+    function ServiceMatches {
+      if (-not (Test-Path -LiteralPath $launcher)) { return $false }
+      $rel = if (Test-Path -LiteralPath $releaseFile) { Get-Content -LiteralPath $releaseFile -Raw } else { '' }
+      if (-not ($rel -match '(?m)^svc=([0-9a-f]+)') -or $Matches[1] -ne (Sha $launcher)) { return $false }
+      $txt = Get-Content -LiteralPath $launcher -Raw
+      if ($Port -eq 7420) { if ($txt -match '--port') { return $false } } elseif ($txt -notmatch "--port\W+$Port\b") { return $false }
+      $ea = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { & schtasks.exe /Query /TN PhoneDesk *> $null; return ($LASTEXITCODE -eq 0) } finally { $ErrorActionPreference = $ea }
+    }
+    if ($autostart -and $upToDate -and (ServiceMatches)) { $svcState = 'already set'; $autostart = $true; $svcKeep = $true }
+    elseif ($autostart) { if (-not (Ask 'Start PhoneDesk automatically when you sign in?' $true)) { $autostart = $false } }
+
     # ---------- 5. firewall (the one step that needs administrator rights) ----------
     # BEFORE the first start: when a program listens without a rule, Windows shows a popup and, unanswered, creates BLOCK rules that beat any allow rule
+    $fwState = 'skipped'
     if (-not $NoFirewall -and -not $NoStart) {
       Step 'Letting your phone reach PhoneDesk'
       $has = $false; $blocked = $false
@@ -339,7 +384,7 @@ function Install-PhoneDesk {
         $blocked = [bool]($rules | Where-Object { $_.Action -eq 'Block' })
       } catch { }
       if ($has -and -not $blocked) {
-        Ok 'Windows Firewall already allows phonedesk.exe'
+        Ok 'Windows Firewall already allows phonedesk.exe'; $fwState = 'already set'
       } else {
         Info 'Windows Firewall blocks incoming connections by default, so a phone on your Wi-Fi could not reach PhoneDesk.'
         if ($blocked) { Caution 'Windows has BLOCK rules for phonedesk.exe (from an unanswered firewall popup); they are removed in the same step.' }
@@ -348,7 +393,7 @@ function Install-PhoneDesk {
           $rule = "netsh advfirewall firewall delete rule name=all program=`"$exe`" >nul 2>&1 & netsh advfirewall firewall add rule name=`"PhoneDesk`" dir=in action=allow program=`"$exe`" profile=any remoteip=localsubnet enable=yes"
           try {
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $rule) -Verb RunAs -Wait -PassThru -WindowStyle Hidden
-            if ($p.ExitCode -eq 0) { Ok 'firewall rule added (local subnet only)' } else { Caution "netsh returned $($p.ExitCode); run `phonedesk doctor` for what to do" }
+            if ($p.ExitCode -eq 0) { Ok 'firewall rule added (local subnet only)'; $fwState = 'installed' } else { Caution "netsh returned $($p.ExitCode); run `phonedesk doctor` for what to do" }
           } catch { Caution 'the permission prompt was declined; no rule was added. Run `phonedesk doctor` to see how to add it later.' }
         } else {
           Info 'Skipped. Without the rule your phone cannot connect; `phonedesk doctor` shows the command to add it later.'
@@ -361,19 +406,30 @@ function Install-PhoneDesk {
       # something else already listening on the port would answer the health check below: stop here and say who
       $holder = $null
       try { $holder = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { }
-      if ($holder) {
+      $alreadyRunning = $false
+      if ($holder -and $upToDate) {
+        try { $ab0 = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/about" -Headers @{ 'x-phonedesk' = '1' } -TimeoutSec 2; $l0 = "phonedesk $($ab0.version)"; if ($ab0.commit) { $l0 += " ($($ab0.commit)$(if ($ab0.dirty) { '-dirty' }))" }; if ($l0 -eq $newVersion) { $alreadyRunning = $true; Info "PhoneDesk is already running on port $Port" } } catch { }
+      }
+      if ($holder -and -not $alreadyRunning) {
         $hp = $null; try { $hp = Get-Process -Id $holder.OwningProcess -ErrorAction Stop } catch { }
         $who = if ($hp) { "$($hp.ProcessName) (pid $($hp.Id)$(if ($hp.Path) { ', ' + $hp.Path }))" } else { "process $($holder.OwningProcess)" }
         Die "port $Port is already in use by $who. Stop it (Stop-Process -Id $($holder.OwningProcess)) or install on another port (`$env:PHONEDESK_PORT=7421). PhoneDesk is installed at $exe; nothing was started."
       }
     }
-    if ($autostart) {
+    if ($autostart -and $svcKeep) {
+      Ok "the background service is already set up (same program, port $Port); keeping it"
+    } elseif ($autostart) {
       Step 'Setting up the background service'
       $svcArgs = @('service', 'install')
       if ($Port -ne 7420) { $svcArgs += @('--port', "$Port") }
       if ((Run-Bin $exe $svcArgs) -eq 0) {
         Ok "PhoneDesk will start when you sign in and restart if it crashes (logs: $logDir)"
         $started = $true
+        $svcState = if ($svcBefore) { 'updated' } else { 'installed' }
+        if ((Test-Path -LiteralPath $releaseFile) -and (Test-Path -LiteralPath $launcher)) {
+          $keep = @(Get-Content -LiteralPath $releaseFile | Where-Object { $_ -notmatch '^svc=' })
+          ($keep + "svc=$(Sha $launcher)") | Set-Content -LiteralPath $releaseFile -Encoding ascii
+        }
       } else {
         Caution 'could not install the scheduled task; starting PhoneDesk without it'
         $autostart = $false
@@ -382,7 +438,7 @@ function Install-PhoneDesk {
     # make sure installed Claude/Codex hooks (if any) point at this program
     [void](Run-Bin $exe @('hooks', 'repoint', '--port', "$Port") -Quiet)
 
-    if (-not $NoStart -and -not $autostart) {
+    if (-not $NoStart -and -not $autostart -and -not $alreadyRunning) {
       Step 'Starting PhoneDesk'
       $saved = @{}
       foreach ($k in $childEnv.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $childEnv[$k], 'Process') }
@@ -421,14 +477,18 @@ function Install-PhoneDesk {
       Write-Host ''
       if (-not [Console]::IsOutputRedirected -and $pairing.url) { try { $qrUrl = if ($pairing.urlLocal) { $pairing.urlLocal } else { $pairing.url }; & $exe qr "$qrUrl" } catch { } }
       Info 'Open the phone URL on a phone on the same Wi-Fi and enter the PIN.'
-      if (-not $NoOpen -and -not $relocated) {
+      if (-not $NoOpen -and -not $relocated -and -not ($upToDate -and $alreadyRunning)) {
         if (Ask 'Open the management page now?' $true) { try { Start-Process "http://localhost:$Port/manage/" } catch { } }
       }
     } else {
       Info "Installed. Start it with: $exe"
     }
     Step 'Done'
-    if ($pathAdded) { Info 'Open a new terminal, then run: phonedesk doctor   (this window already has it)' }
+    Write-Host ("    {0,-9} {1}" -f 'Program', $binState)
+    Write-Host ("    {0,-9} {1}" -f 'PATH', $pathState)
+    Write-Host ("    {0,-9} {1}" -f 'Service', $svcState)
+    Write-Host ("    {0,-9} {1}" -f 'Firewall', $fwState)
+    if ($pathState -eq 'installed') { Info 'Open a new terminal, then run: phonedesk doctor   (this window already has it)' }
     Info 'Check permissions and the firewall any time with: phonedesk doctor'
     Info 'Update: run the same install command again.  Remove: uninstall.ps1 (see the README).'
   } finally {
@@ -442,5 +502,5 @@ if ($env:PHONEDESK_SETUP_NORUN -ne '1') {
     -Port $(if ($env:PHONEDESK_PORT) { [int]$env:PHONEDESK_PORT } else { 7420 }) `
     -NoAutostart:($env:PHONEDESK_NO_AUTOSTART -eq '1') -NoStart:($env:PHONEDESK_NO_START -eq '1') `
     -NoOpen:($env:PHONEDESK_NO_OPEN -eq '1') -NoFirewall:($env:PHONEDESK_NO_FIREWALL -eq '1') `
-    -NoPath:($env:PHONEDESK_NO_PATH -eq '1') -DryRun:($env:PHONEDESK_DRY_RUN -eq '1')
+    -NoPath:($env:PHONEDESK_NO_PATH -eq '1') -DryRun:($env:PHONEDESK_DRY_RUN -eq '1') -Force:($env:PHONEDESK_FORCE -eq '1')
 }

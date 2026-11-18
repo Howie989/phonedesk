@@ -17,6 +17,7 @@ import { SoundsPanel } from "@/components/sounds-panel";
 import { ThemePanel } from "@/components/theme-panel";
 import { PermissionsPanel } from "@/components/permissions-panel";
 import { AboutCard } from "@/components/about-card";
+import { UpdateBanner } from "@/components/update-banner";
 import { useAbout } from "@/lib/about";
 import { setPlatform, usePlatform } from "@/lib/platform";
 import { needsAttention, useDoctor } from "@/lib/doctor";
@@ -290,6 +291,8 @@ export default function App() {
           {t("Save")} <Kbd size="sm" tone="inverse">⌘S</Kbd>
         </Button>
       </header>
+
+      <UpdateBanner repo={about?.repo ?? REPO} enabled={layout?.theme?.updateCheck !== false} />
 
       <SegmentedControl
         aria-label={t("Sections")}

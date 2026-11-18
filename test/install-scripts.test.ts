@@ -18,12 +18,12 @@ const sha = (f: string) => createHash("sha256").update(readFileSync(f)).digest("
 const bunPath = process.execPath;
 
 /** A "release": phonedesk-darwin-arm64/x64 are wrappers that run this checkout's real CLI, plus SHA256SUMS. */
-function makeRelease(opts: { tamper?: boolean; omit?: boolean; gz?: "good" | "bad-sum" | "no-file" | "bad-content" } = {}) {
+function makeRelease(opts: { tamper?: boolean; omit?: boolean; gz?: "good" | "bad-sum" | "no-file" | "bad-content"; variant?: string } = {}) {
   const dir = mkdtempSync(join(sandbox, "release-"));
   const lines: string[] = [];
   for (const arch of ["arm64", "x64"]) {
     const f = join(dir, `phonedesk-darwin-${arch}`);
-    writeFileSync(f, `#!/bin/bash\nexec "${bunPath}" "${join(root, "src", "index.ts")}" "$@"\n`);
+    writeFileSync(f, `#!/bin/bash\nexec "${bunPath}" "${join(root, "src", "index.ts")}" "$@"\n${opts.variant ? `# ${opts.variant}\n` : ""}`);
     chmodSync(f, 0o755);
     lines.push(`${opts.tamper ? "0".repeat(64) : sha(f)}  phonedesk-darwin-${arch}`);
     if (opts.gz) {
@@ -167,7 +167,7 @@ describe.skipIf(!mac)("setup.sh", () => {
 
     // update: the same command again stops the running agent, replaces the binary and starts a new one
     const port2 = await freePort();
-    const r2 = sh("setup.sh", ["--yes", "--no-autostart", "--no-open", "--port", String(port2)], env(home, release));
+    const r2 = sh("setup.sh", ["--yes", "--no-autostart", "--no-open", "--force", "--port", String(port2)], env(home, release)); // --force: the same release again
     expect(r2.exitCode, out(r2)).toBe(0);
     expect(out(r2)).toContain("replacing phonedesk");
     const pid2 = Number(readFileSync(join(home, ".phonedesk", "agent.pid"), "utf8"));
@@ -407,4 +407,87 @@ describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => 
     expect(r.exitCode, text).toBe(0);
     expect(text).toContain(`running on port ${port}`);
   }, 60_000);
+});
+
+describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", () => {
+  const sum = (t: string) => /Program\s+(.+)\n\s*PATH\s+(.+)\n\s*Service\s+(.+)/.exec(t)?.slice(1, 4).map((x) => x.trim());
+  test("same release, agent running: no download, no questions, the same agent keeps running, summary says 'already set'", async () => {
+    const home = newHome();
+    const release = makeRelease({ gz: "good" });
+    const port = await freePort();
+    const args = ["--yes", "--no-open", "--no-autostart", "--port", String(port)];
+    const r1 = sh("setup.sh", args, env(home, release));
+    expect(r1.exitCode, out(r1)).toBe(0);
+    expect(sum(out(r1))).toEqual(["installed", "installed", "skipped"]);
+    const pidfile = join(home, ".phonedesk", "agent.pid");
+    const pid = Number(readFileSync(pidfile, "utf8")); spawned.push(pid);
+    const bin = join(home, ".phonedesk", "bin", "phonedesk");
+    const before = statSync(bin).mtimeMs;
+    const rc = readFileSync(join(home, ".zshrc"), "utf8");
+    const t0 = Date.now();
+    const r2 = sh("setup.sh", args, env(home, release));
+    const text = out(r2);
+    expect(r2.exitCode, text).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(15_000);
+    expect(text).toMatch(/PhoneDesk \d+\.\d+\.\d+ is already installed/);
+    expect(text).not.toContain("Downloading");
+    expect(text).not.toContain("[Y/n]");
+    expect(text).toContain("already on your PATH");
+    expect(text).toContain("PhoneDesk is already running");
+    expect(sum(text)).toEqual(["already set", "already set", "skipped"]);
+    expect(statSync(bin).mtimeMs).toBe(before);
+    expect(readFileSync(join(home, ".zshrc"), "utf8")).toBe(rc);
+    expect(Number(readFileSync(pidfile, "utf8"))).toBe(pid); // not restarted
+    expect((await fetch(`http://127.0.0.1:${port}/api/pairing`)).status).toBe(200);
+    // --force reinstalls anyway
+    const r3 = sh("setup.sh", [...args, "--force"], env(home, release));
+    expect(r3.exitCode, out(r3)).toBe(0);
+    expect(out(r3)).toContain("Downloading");
+    expect(sum(out(r3))?.[0]).toMatch(/^updated/);
+    spawned.push(Number(readFileSync(pidfile, "utf8")));
+  }, 90_000);
+  test("the launchd service: kept when it runs this program on this port; rewritten when the port changes", () => {
+    const home = newHome();
+    const release = makeRelease();
+    const args = ["--yes", "--no-open", "--no-start"];
+    const e = env(home, release);
+    const r1 = sh("setup.sh", [...args, "--port", "7541"], e);
+    expect(sum(out(r1))?.[2]).toBe("installed");
+    const plist = join(home, "Library", "LaunchAgents", "dev.phonedesk.agent.plist");
+    const same = readFileSync(plist, "utf8");
+    const r2 = sh("setup.sh", [...args, "--port", "7541"], e);
+    expect(out(r2)).toContain("the background service is already set up");
+    expect(sum(out(r2))?.[2]).toBe("already set");
+    expect(readFileSync(plist, "utf8")).toBe(same);
+    const r3 = sh("setup.sh", [...args, "--port", "7542"], e);
+    expect(sum(out(r3))?.[2]).toBe("updated");
+    expect(readFileSync(plist, "utf8")).toContain("<string>7542</string>");
+  }, 90_000);
+  test("a tampered install is not 'up to date'; a different release is an upgrade", () => {
+    const home = newHome();
+    const args = ["--yes", "--no-open", "--no-start", "--no-autostart"];
+    expect(sh("setup.sh", args, env(home, makeRelease())).exitCode).toBe(0);
+    const bin = join(home, ".phonedesk", "bin", "phonedesk");
+    // a different release (another file, another sum): downloaded and replaced
+    const up = sh("setup.sh", args, env(home, makeRelease({ variant: "v2" })));
+    expect(up.exitCode, out(up)).toBe(0);
+    expect(out(up)).not.toContain("already installed");
+    expect(sum(out(up))?.[0]).toMatch(/^updated \(/);
+    // the installed file changed behind our back: reinstalled even though the release is the same
+    const rel = makeRelease({ variant: "v2" });
+    writeFileSync(bin, readFileSync(bin, "utf8") + "# edited\n");
+    const fix = sh("setup.sh", args, env(home, rel));
+    expect(out(fix)).not.toContain("already installed");
+    expect(fix.exitCode, out(fix)).toBe(0);
+    expect(readFileSync(bin, "utf8")).not.toContain("# edited");
+  }, 90_000);
+  test("an install without the .release marker (older setup) is reinstalled once, then it is up to date", () => {
+    const home = newHome();
+    const rel = makeRelease();
+    const args = ["--yes", "--no-open", "--no-start", "--no-autostart"];
+    expect(sh("setup.sh", args, env(home, rel)).exitCode).toBe(0);
+    rmSync(join(home, ".phonedesk", "bin", ".release"));
+    expect(out(sh("setup.sh", args, env(home, rel)))).not.toContain("already installed");
+    expect(out(sh("setup.sh", args, env(home, rel)))).toContain("already installed");
+  }, 90_000);
 });

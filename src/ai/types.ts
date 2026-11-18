@@ -1,14 +1,15 @@
 import { t } from "../i18n";
 export type AiProviderId = "claude" | "codex" | "antigravity" | "opencode" | "grok";
-export type QuotaSource = "claude-code" | "codex-sessions" | "antigravity-local" | "opencode-local" | "none";
-export const QUOTA_SOURCE: Record<AiProviderId, QuotaSource> = { claude: "claude-code", codex: "codex-sessions", antigravity: "antigravity-local", opencode: "opencode-local", grok: "none" };
+export type QuotaSource = "claude-code" | "codex-sessions" | "antigravity-local" | "opencode-local" | "grok-cli" | "none";
+export const QUOTA_SOURCE: Record<AiProviderId, QuotaSource> = { claude: "claude-code", codex: "codex-sessions", antigravity: "antigravity-local", opencode: "opencode-local", grok: "grok-cli" };
 /** The tools whose sessions the sessions widget lists. */
 export type SessionTool = "claude" | "codex" | "opencode" | "grok";
 
 export interface QuotaWindow {
   id: string;
   label: string; // translated, e.g. "5 hours", "7 days"
-  usedPercent: number; // 0-100
+  /** 0-100; null when the tool has a period but does not report usage for it (Grok on a plan without a percentage). */
+  usedPercent: number | null;
   resetsAt?: number; // ms since epoch
   windowMinutes?: number;
   /** usedPercent samples [ms, percent], one per 5 minutes for up to 24 h, at most 48 points. */

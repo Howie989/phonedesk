@@ -152,6 +152,8 @@ export interface Theme {
   language?: Language;
   /** Temperature unit for every widget (weather, climate, sensors); missing = "c". A widget-level weather.units still wins. */
   temperatureUnit?: "c" | "f";
+  /** false = never ask GitHub whether a newer PhoneDesk exists (GET /api/update then reports enabled:false). Missing = on. */
+  updateCheck?: boolean;
 }
 
 export type Orientation = "landscape" | "portrait" | "auto";
@@ -352,6 +354,7 @@ function validateTheme(t: any): Theme | undefined {
     if (t.temperatureUnit !== "c" && t.temperatureUnit !== "f") throw new Error("theme.temperatureUnit must be c or f");
     out.temperatureUnit = t.temperatureUnit;
   }
+  if (t.updateCheck !== undefined) out.updateCheck = bool(t.updateCheck, "theme.updateCheck");
   if (t.language !== undefined) {
     if (!LANGUAGES.includes(t.language)) throw new Error(`theme.language must be one of ${LANGUAGES.join(", ")}`);
     out.language = t.language;

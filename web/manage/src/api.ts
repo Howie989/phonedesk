@@ -1,6 +1,6 @@
 import { t } from "./lib/i18n";
 import { asPlatform, type Platform } from "./lib/platform";
-import { AI_PROVIDERS, type IconCatalog, type MacApp, type Sound, type HassConfig, type HassEntity, type HassService, type GeoPlace, type WebhookInfo, type AiProvider, type DeviceInfo, type About, type DoctorItem, type DoctorStatus, type Integration, type Layout, type Pairing } from "./types";
+import { AI_PROVIDERS, type IconCatalog, type MacApp, type Sound, type HassConfig, type HassEntity, type HassService, type GeoPlace, type WebhookInfo, type AiProvider, type DeviceInfo, type About, type UpdateInfo, type DoctorItem, type DoctorStatus, type Integration, type Layout, type Pairing } from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -243,6 +243,10 @@ export const api = {
     const repo = (str(o.repo) ?? str(o.repository) ?? str(o.homepage) ?? "https://github.com/howznguyen/phonedesk").replace(/(\.git)?\/*$/, "");
     const d = o.buildDate ?? o.builtAt ?? o.built;
     return { version: version.replace(/^v/, ""), commit: str(o.commit)?.replace(/-dirty$/, "").slice(0, 7), dirty: o.dirty === true || /dirty/.test(str(o.commit) ?? "") || undefined, buildDate: typeof d === "number" ? new Date(d < 1e12 ? d * 1000 : d).toISOString() : str(d), platform: str(o.platform), arch: str(o.arch), repo };
+  },
+  getUpdate: async (): Promise<UpdateInfo> => {
+    const o = rec(await request<unknown>("/api/update"));
+    return { current: str(o.current) ?? "", latest: str(o.latest) ?? null, available: o.available === true, checkedAt: typeof o.checkedAt === "number" ? o.checkedAt : null, enabled: o.enabled !== false, error: str(o.error) };
   },
   getDoctor: async (): Promise<DoctorItem[]> => {
     const raw = rec(await request<unknown>("/api/doctor"));

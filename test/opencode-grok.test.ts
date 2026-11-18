@@ -290,8 +290,9 @@ describe("Grok sessions, state and hook file", () => {
     expect(GK.parseActiveSessions({ sessions: [{ sessionId: "z" }] })).toEqual(["z"]);
     expect(GK.parseActiveSessions(null)).toEqual([]);
   });
-  test("no quota: the provider says why", () => {
-    expect(GK.grokQuota(NOW)).toMatchObject({ id: "grok", windows: [], error: "Grok has no usage API" });
+  test("no grok binary: the provider says why", async () => {
+    GK.resetGrokQuotaCache();
+    expect(await GK.grokQuota({ now: NOW, bin: null })).toMatchObject({ id: "grok", windows: [], error: "Grok was not found" });
   });
   test("hook file: the five events with explicit timeouts and the right states; refuses a foreign file; uninstall removes only ours", async () => {
     const d = tmp(); const f = join(d, "hooks", "phonedesk.json");
@@ -364,7 +365,7 @@ describe("agent: /api/hooks/state, /api/integrations and the install endpoints",
   });
   test("/api/integrations: opencode and grok blocks", async () => {
     const j = (await (await fetch(base + "/api/integrations")).json()) as any;
-    expect(j.grok).toMatchObject({ installed: true /* no binary, but its data dir exists */, sessions: 1, quota: null, quotaReason: "Grok has no usage API", hook: { installed: false, path: hookFile } });
+    expect(j.grok).toMatchObject({ installed: true /* no binary, but its data dir exists */, sessions: 1, quota: null, quotaReason: expect.stringContaining("grok agent stdio"), hook: { installed: false, path: hookFile } });
     expect(j.opencode).toMatchObject({ installed: false, sessions: 0, quota: null, plugin: { installed: false, path: pluginFile } });
     expect(j.opencode.quotaReason).toBeTruthy();
   });
@@ -412,5 +413,101 @@ describe("agent: /api/hooks/state, /api/integrations and the install endpoints",
     ws.send(JSON.stringify({ type: "permission-answer", id: perm.request.id, decision: "allow" }));
     expect(await (await reqP).json()).toEqual({ decision: "allow" });
     ws.close();
+  });
+});
+
+describe("Grok usage through `grok agent stdio` (fake CLI)", () => {
+  // a fake grok: newline-delimited JSON-RPC on stdin/stdout; MODE picks the behaviour; every start is logged to $LOG
+  const fake = (mode: string, billing: unknown = {}) => {
+    const d = tmp();
+    const f = join(d, "grok");
+    writeFileSync(join(d, "billing.json"), JSON.stringify(billing));
+    writeFileSync(f, `#!/bin/bash
+echo "$$ $*" >> "${d}/starts.log"
+[ "$1 $2" = "agent stdio" ] || exit 2
+MODE=${mode}
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9]*\\).*/\\1/p')
+  case "$line" in
+    *'"initialize"'*) echo '{"jsonrpc":"2.0","method":"notice","params":{}}'; echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":1,"authMethods":[]}}' ;;
+    *'"_x.ai/billing"'*)
+      echo "$line" > "${d}/billing-request.json"
+      case $MODE in
+        ok) echo '{"jsonrpc":"2.0","id":'$id',"result":'"$(cat "${d}/billing.json")"'}' ;;
+        nomethod) echo '{"jsonrpc":"2.0","id":'$id',"error":{"code":-32601,"message":"Method not found"}}' ;;
+        autherr) echo '{"jsonrpc":"2.0","id":'$id',"error":{"code":-32000,"message":"authentication required, run grok login"}}' ;;
+        hang) sleep 60 ;;
+        garbage) echo 'not json'; echo '{"jsonrpc":"2.0","id":'$id',"result":' ;;
+      esac ;;
+  esac
+done
+`);
+    chmodSync(f, 0o755);
+    return { f, d };
+  };
+  const starts = (d: string) => (existsSync(join(d, "starts.log")) ? readFileSync(join(d, "starts.log"), "utf8").trim().split("\n").length : 0);
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  test("the real Mac payload (grok 1.0.70, Free): a weekly window with no percentage, the plan, no prepaid extra", () => {
+    const real = { jsonrpc: "2.0", id: 2, result: { config: { currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-11T15:45:58.364+00:00", end: "2026-11-18T15:45:58.364+00:00" }, prepaidBalance: { val: 0 }, isUnifiedBillingUser: true, billingPeriodStart: "2026-11-11T15:45:58.364+00:00", billingPeriodEnd: "2026-11-18T15:45:58.364+00:00" }, subscription_tier: "Free" } };
+    const q = GK.grokQuotaFrom(GK.parseGrokBilling(real.result), NOW);
+    expect(q).toMatchObject({ id: "grok", plan: "Free", source: "grok-cli" });
+    expect(q.windows).toEqual([{ id: "weekly", label: "Weekly", usedPercent: null, resetsAt: Date.parse("2026-11-18T15:45:58.364Z"), windowMinutes: 10080 }]);
+    expect(q.extras).toBeUndefined();
+    expect(q.error).toBeUndefined();
+  });
+  test("weekly credits window with a percentage, reset and prepaid balance", () => {
+    const q = GK.grokQuotaFrom(GK.parseGrokBilling({ config: { creditUsagePercent: 41.26, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-11T00:00:00Z", end: "2026-11-18T00:00:00Z" }, prepaidBalance: { val: 1250 } }, subscription_tier: "SuperGrok" }), NOW);
+    expect(q.plan).toBe("SuperGrok");
+    expect(q.windows).toEqual([{ id: "weekly", label: "7 days", usedPercent: 41.3, resetsAt: Date.parse("2026-11-18T00:00:00Z"), windowMinutes: 10080 }]);
+    expect(q.extras).toEqual([{ label: "Prepaid balance", value: 12.5, unit: "USD" }]);
+    expect(q.error).toBeUndefined();
+  });
+  test("percentage from onDemandUsed / onDemandCap, and the legacy monthlyLimit / usage.totalUsed shape", () => {
+    expect(GK.parseGrokBilling({ config: { onDemandUsed: { val: 250 }, onDemandCap: { val: 1000 }, billingPeriodStart: "2026-11-01T00:00:00Z", billingPeriodEnd: "2026-11-08T00:00:00Z" } })?.window?.usedPercent).toBe(25);
+    const legacy = GK.parseGrokBilling({ billingCycle: { billingPeriodStart: "2026-11-01T00:00:00Z", billingPeriodEnd: "2026-12-01T00:00:00Z" }, monthlyLimit: { val: 2000 }, usage: { totalUsed: { val: 500 } } });
+    expect(legacy?.window).toMatchObject({ usedPercent: 25, weekly: false });
+    expect(GK.parseGrokBilling({})).toBeNull();
+    expect(GK.parseGrokBilling(null)).toBeNull();
+  });
+  test("a real call to a fake CLI: sends initialize then _x.ai/billing with no params; result parsed; cached 5 minutes; the child is gone", async () => {
+    GK.resetGrokQuotaCache();
+    const { f, d } = fake("ok", { config: { creditUsagePercent: 12, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-11T00:00:00Z", end: "2026-11-18T00:00:00Z" } }, subscription_tier: "SuperGrok" });
+    const q = await GK.grokQuota({ now: NOW, bin: f });
+    expect(q).toMatchObject({ plan: "SuperGrok", windows: [{ usedPercent: 12 }] });
+    expect(JSON.parse(readFileSync(join(d, "billing-request.json"), "utf8"))).toMatchObject({ jsonrpc: "2.0", method: "_x.ai/billing", params: {} });
+    expect(starts(d)).toBe(1);
+    await GK.grokQuota({ now: NOW + 4 * 60_000, bin: f });
+    expect(starts(d)).toBe(1); // cached
+    await GK.grokQuota({ now: NOW + 6 * 60_000, bin: f });
+    expect(starts(d)).toBe(2); // expired
+    await Bun.sleep(200);
+    for (const l of readFileSync(join(d, "starts.log"), "utf8").trim().split("\n")) expect(alive(Number(l.split(" ")[0]))).toBe(false);
+  });
+  test("-32601, an auth error and garbage all give quota null-ish with a reason, never a throw", async () => {
+    for (const [mode, text] of [["nomethod", "no usage method"], ["autherr", "authentication required"], ["garbage", "did not answer in time"]] as const) {
+      GK.resetGrokQuotaCache();
+      const { f } = fake(mode);
+      const q = await GK.grokQuota({ now: NOW, bin: f, timeoutMs: 3000 });
+      expect(q.windows).toEqual([]);
+      expect(q.error).toContain(text);
+    }
+  });
+  test("a CLI that never answers: hard timeout, and the child is killed", async () => {
+    GK.resetGrokQuotaCache();
+    const { f, d } = fake("hang");
+    const t0 = Date.now();
+    const q = await GK.grokQuota({ now: NOW, bin: f, timeoutMs: 800 });
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(q.error).toContain("did not answer in time");
+    await Bun.sleep(300);
+    for (const l of readFileSync(join(d, "starts.log"), "utf8").trim().split("\n")) expect(alive(Number(l.split(" ")[0]))).toBe(false);
+  });
+  test("concurrent callers share one in-flight call", async () => {
+    GK.resetGrokQuotaCache();
+    const { f, d } = fake("ok", { subscription_tier: "Free" });
+    const rs = await Promise.all([GK.grokQuota({ now: NOW, bin: f }), GK.grokQuota({ now: NOW, bin: f }), GK.grokQuota({ now: NOW, bin: f })]);
+    expect(starts(d)).toBe(1);
+    expect(rs[0]).toBe(rs[1]);
   });
 });

@@ -47,6 +47,7 @@ export class QuotaHistory {
   }
 
   private sample(provider: string, account: string, w: QuotaWindow, t: number): boolean {
+    if (w.usedPercent === null) return false; // nothing to chart
     const k = this.key(provider, account, w.id);
     const pts = this.series.get(k) ?? [];
     const last = pts[pts.length - 1];

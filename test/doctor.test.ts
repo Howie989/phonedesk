@@ -227,12 +227,57 @@ describe("text output and language", () => {
 });
 
 describe("the real probes (read-only calls only: no prompts)", () => {
-  test.skipIf(process.platform !== "darwin")("AXIsProcessTrusted and AEDetermine...(ask=false) answer with a value", () => {
+  test.skipIf(process.platform !== "darwin")("AXIsProcessTrusted and the bounded Automation check answer with a value", async () => {
     const p = D.realProbes("x");
-    expect([true, false, null]).toContain(p.axTrusted());
-    expect(["granted", "denied", "not-asked", "not-running", "unknown"]).toContain(p.automation("com.apple.systemevents"));
+    expect([true, false, null]).toContain(await p.axTrusted());
+    expect(["granted", "denied", "not-asked", "not-running", "unknown"]).toContain(await p.automation("com.apple.systemevents"));
     expect(p.exe).toBe(process.execPath);
     expect(p.asService).toBe(false);
+  });
+});
+
+describe("the bounded Automation probe", () => {
+  test.skipIf(process.platform !== "darwin")("a child that takes longer than the limit is killed and reported as unknown", async () => {
+    D.resetProbeCache();
+    const t0 = Date.now();
+    expect(await D.boundedAutomation("com.apple.systemevents", 1)).toBe("unknown"); // 1 ms: the child cannot even start
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+  test.skipIf(process.platform !== "darwin")("answers are cached for 60 s and one question is asked once at a time", async () => {
+    D.resetProbeCache();
+    const [a, b] = await Promise.all([D.boundedAutomation("com.apple.systemevents"), D.boundedAutomation("com.apple.systemevents")]);
+    expect(b).toBe(a);
+    const t0 = Date.now();
+    expect(await D.boundedAutomation("com.apple.systemevents")).toBe(a);
+    expect(Date.now() - t0).toBeLessThan(50); // from the cache, no child
+  });
+  test.skipIf(process.platform !== "darwin")("an app that is not running is not probed at all", async () => {
+    D.resetProbeCache();
+    // a bundle that has no process name entry would be asked; Spotify/Music are checked with pgrep first
+    const r = await D.boundedAutomation("com.spotify.client");
+    expect(["not-running", "granted", "denied", "not-asked", "unknown"]).toContain(r);
+  });
+  test.skipIf(process.platform !== "darwin")("the agent keeps answering while the REAL /api/doctor runs", async () => {
+    const { startServer } = await import("../src/server");
+    const dir2 = mkdtempSync(join(tmpdir(), "pd-doc-live-"));
+    const q = (id: string) => ({ id, name: id, windows: [], updatedAt: 1 });
+    const app = await startServer({
+      port: 0, pin: "919191", hostName: async () => "my-mac", hookSecret: "s", webhookKeyFile: join(dir2, "wk"), layoutHistoryDir: join(dir2, "h"), askSettingsFile: join(dir2, "ask.json"),
+      deps: { runAction: async () => {}, startStats: () => () => {}, setVolume: async () => {}, readVolume: async () => null, readMedia: async () => null, fetchArtwork: async () => undefined, topProcesses: async () => [] } as any,
+      aiSources: { claude: async () => q("claude"), codex: async () => q("codex"), antigravity: async () => q("antigravity"), sessions: async () => [] } as any,
+    } as any);
+    try {
+      D.resetProbeCache();
+      const doctor = fetch(`http://localhost:${app.port}/api/doctor`);
+      let worst = 0;
+      for (let i = 0; i < 5; i++) { const t0 = Date.now(); expect((await fetch(`http://localhost:${app.port}/api/about`)).status).toBe(200); worst = Math.max(worst, Date.now() - t0); await Bun.sleep(100); }
+      expect(worst).toBeLessThan(1000);
+      expect((await doctor).status).toBe(200);
+    } finally { app.stop(); }
+  }, 30_000);
+  test.skipIf(process.platform !== "darwin")("the internal __ae command answers with one state word and exits", () => {
+    const r = Bun.spawnSync(["bun", join(import.meta.dir, "..", "src", "index.ts"), "__ae", "com.apple.systemevents"], { env: { PATH: process.env.PATH!, PHONEDESK_HOME: mkdtempSync(join(tmpdir(), "pd-ae-")) }, stdout: "pipe", stderr: "pipe", timeout: 15_000 }); // PHONEDESK_HOME is set
+    expect(["granted", "denied", "not-asked", "not-running", "unknown"]).toContain(r.stdout.toString().trim());
   });
 });
 

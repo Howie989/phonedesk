@@ -43,12 +43,12 @@ export interface Probes {
   /** Runs a command and returns its exit code and stdout+stderr. Never throws. */
   run(argv: string[]): Promise<{ code: number; out: string }>;
   /** AXIsProcessTrusted(): null when it cannot be asked. */
-  axTrusted(): boolean | null;
-  /** AEDeterminePermissionToAutomateTarget(askUserIfNeeded=false). */
-  automation(bundleId: string): AutomationState;
+  axTrusted(): boolean | null | Promise<boolean | null>;
+  /** AEDeterminePermissionToAutomateTarget(askUserIfNeeded=false). Async and bounded: the real one asks a short-lived child, because the call can block for good. */
+  automation(bundleId: string): AutomationState | Promise<AutomationState>;
   /** The prompting variants, only for an explicit request: AXIsProcessTrustedWithOptions(prompt) / AEDetermine...(ask=true). */
-  requestAccessibility(): boolean | null;
-  requestAutomation(bundleId: string): AutomationState;
+  requestAccessibility(): boolean | null | Promise<boolean | null>;
+  requestAutomation(bundleId: string): AutomationState | Promise<AutomationState>;
   installed(bundleId: string): boolean;
   which(name: string): string | null;
   hookFiles(): Partial<Record<HookTool, string>>;
@@ -84,11 +84,11 @@ export const AUTOMATION_TARGETS = [
 
 const who = (p: Probes) => (p.asService ? t("the phonedesk program") : t("the terminal app you started PhoneDesk from"));
 
-function accessibility(p: Probes): DoctorItem {
+async function accessibility(p: Probes): Promise<DoctorItem> {
   const title = t("Accessibility");
   if (p.platform !== "darwin") return { id: "accessibility", title, status: "n/a", detail: t("macOS only") };
-  const ok = p.axTrusted();
-  if (ok === null) return { id: "accessibility", title, status: "unknown", detail: t("could not ask macOS") };
+  const ok = await p.axTrusted();
+  if (ok === null) return { id: "accessibility", title, status: "unknown", detail: t("macOS did not answer") };
   if (ok) return { id: "accessibility", title, status: "ok", detail: t("granted to {who}", { who: who(p) }) };
   return {
     id: "accessibility", title, status: "missing", detail: t("not granted to {who}: key press and typing tiles will not work", { who: who(p) }),
@@ -96,18 +96,18 @@ function accessibility(p: Probes): DoctorItem {
   };
 }
 
-function automation(p: Probes, tg: (typeof AUTOMATION_TARGETS)[number]): DoctorItem {
+async function automation(p: Probes, tg: (typeof AUTOMATION_TARGETS)[number]): Promise<DoctorItem> {
   const title = t("Automation: {app}", { app: tg.name });
   if (p.platform !== "darwin") return { id: tg.id, title, status: "n/a", detail: t("macOS only") };
   if (tg.bundle !== "com.apple.systemevents" && !p.installed(tg.bundle)) return { id: tg.id, title, status: "n/a", detail: t("{app} is not installed", { app: tg.name }) };
-  const s = p.automation(tg.bundle);
+  const s = await p.automation(tg.bundle);
   const fix = { text: t("Open System Settings > Privacy & Security > Automation and allow {who} to control {app}.", { who: p.asService ? "phonedesk" : t("your terminal app"), app: tg.name }), settingsUrl: PANES.automation };
   switch (s) {
     case "granted": return { id: tg.id, title, status: "ok", detail: t("allowed (used for {why})", { why: t(tg.why) }) };
     case "denied": return { id: tg.id, title, status: "denied", detail: t("denied: {why} will not work", { why: t(tg.why) }), fix };
     case "not-asked": return { id: tg.id, title, status: "missing", detail: t("not asked yet: macOS asks the first time a tile needs it"), fix: { ...fix, text: t("Press a tile that uses {app}, or run `phonedesk doctor --request {id}`, then click Allow.", { app: tg.name, id: tg.id }) } };
     case "not-running": return { id: tg.id, title, status: "unknown", detail: t("{app} is not running, so macOS cannot say; open it and run the check again", { app: tg.name }) };
-    default: return { id: tg.id, title, status: "unknown", detail: t("could not ask macOS") };
+    default: return { id: tg.id, title, status: "unknown", detail: t("macOS did not answer") };
   }
 }
 
@@ -222,13 +222,13 @@ export async function runDoctor(p: Probes, ctx: DoctorCtx): Promise<DoctorReport
     ...(p.asService ? {} : { fix: { text: t("Run `phonedesk service install` to run in the background; macOS then asks for permissions for phonedesk itself.") } }),
   });
   items.push(await signature(p));
-  items.push(accessibility(p));
+  items.push(await accessibility(p));
   // System Events starts on demand, so launch it silently before asking; Music and Spotify are only reported when running
-  if (p.platform === "darwin" && p.automation("com.apple.systemevents") === "not-running") {
+  if (p.platform === "darwin" && (await p.automation("com.apple.systemevents")) === "not-running") {
     await p.run(["open", "-gj", "-b", "com.apple.systemevents"]);
     await new Promise((r) => setTimeout(r, 800));
   }
-  for (const tg of AUTOMATION_TARGETS) items.push(automation(p, tg));
+  items.push(...(await Promise.all(AUTOMATION_TARGETS.map((tg) => automation(p, tg)))));
   items.push(await keychainClaude(p, ctx));
   items.push(keychainHass(p, ctx));
   items.push(localNetwork(p, ctx));
@@ -324,6 +324,75 @@ export function realAutomation(bundleId: string, ask = false): AutomationState {
   }
 }
 
+/**
+ * macOS permission calls (Apple Events, Accessibility) are synchronous and can block for good: tccd stuck, a target app that is
+ * launching or hung. On the agent's main thread that freezes Bun.serve, so they never run there: each is asked of a short-lived
+ * child (`phonedesk __ae <bundle> [ask]`, `phonedesk __ax [prompt]`) with a hard timeout, killed when it does not answer.
+ * Results are cached for 60 s and at most one child per question is in flight.
+ */
+const PROBE_TTL_MS = 60_000;
+const probeCache = new Map<string, { at: number; value: string }>();
+const probeFlight = new Map<string, Promise<string>>();
+export const resetProbeCache = () => { probeCache.clear(); probeFlight.clear(); };
+
+async function childProbe(args: string[], ms: number, o: { cache?: boolean } = {}): Promise<string> {
+  const key = args.join(" ");
+  const useCache = o.cache !== false;
+  const hit = probeCache.get(key);
+  if (useCache && hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.value;
+  const running = probeFlight.get(key);
+  if (running) return running;
+  const job = (async () => {
+    let value = "";
+    try {
+      const { defaultProgram } = await import("./service");
+      const p = Bun.spawn([...defaultProgram(), ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: process.env as Record<string, string> });
+      const timer = setTimeout(() => { try { p.kill("SIGKILL"); } catch { /* gone */ } }, ms);
+      try { value = (await new Response(p.stdout).text()).trim(); await p.exited; } finally { clearTimeout(timer); }
+    } catch { /* value stays "" = no answer */ }
+    if (useCache && value) probeCache.set(key, { at: Date.now(), value });
+    if (!useCache) probeCache.clear(); // after a request the old answers are stale
+    return value;
+  })().finally(() => probeFlight.delete(key));
+  probeFlight.set(key, job);
+  return job;
+}
+
+/** The process name to look for before asking: only a target that is running is probed (System Events starts on demand). */
+const TARGET_PROCESS: Record<string, string> = { "com.apple.Music": "Music", "com.spotify.client": "Spotify" };
+
+export async function boundedAutomation(bundleId: string, ms = 3000): Promise<AutomationState> {
+  const proc = TARGET_PROCESS[bundleId];
+  if (proc) {
+    try {
+      const pg = Bun.spawn(["pgrep", "-x", proc], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+      if ((await pg.exited) !== 0) return "not-running";
+    } catch { /* cannot tell: ask anyway */ }
+  }
+  const out = await childProbe(["__ae", bundleId], ms);
+  return (["granted", "denied", "not-asked", "not-running"] as const).find((s) => s === out) ?? "unknown";
+}
+
+export async function boundedAx(ms = 3000): Promise<boolean | null> {
+  const out = await childProbe(["__ax"], ms);
+  return out === "true" ? true : out === "false" ? false : null;
+}
+
+/** The prompting variants: the child lives long enough for the user to answer; they bypass and clear the cache. */
+export async function boundedRequestAutomation(bundleId: string): Promise<AutomationState> {
+  const out = await childProbe(["__ae", bundleId, "ask"], 90_000, { cache: false });
+  return (["granted", "denied", "not-asked", "not-running"] as const).find((s) => s === out) ?? "unknown";
+}
+export async function boundedRequestAx(): Promise<boolean | null> {
+  const out = await childProbe(["__ax", "prompt"], 90_000, { cache: false });
+  return out === "true" ? true : out === "false" ? false : null;
+}
+
+export function realAxTrusted(): boolean | null {
+  const f = frameworks();
+  try { return f ? (f.lib.AXIsProcessTrusted() as boolean) : null; } catch { return null; }
+}
+
 /** AXIsProcessTrustedWithOptions(prompt=true): shows macOS's Accessibility prompt and lists this program. Returns whether it is trusted now. */
 export function realAxPrompt(): boolean | null {
   const f = frameworks();
@@ -370,16 +439,12 @@ export function realProbes(version: string): Probes {
         return { code: 127, out: String(err?.message ?? err) };
       }
     },
-    axTrusted: () => {
-      if (platform !== "darwin") return null;
-      const f = frameworks();
-      try { return f ? (f.lib.AXIsProcessTrusted() as boolean) : null; } catch { return null; }
-    },
-    automation: (b) => (platform === "darwin" ? realAutomation(b, false) : "unknown"),
+    axTrusted: () => (platform === "darwin" ? boundedAx() : null),
+    automation: (b) => (platform === "darwin" ? boundedAutomation(b) : "unknown"),
     installed: (b) => (APP_PATHS[b] ?? []).some((x) => existsSync(x)),
     which: (n) => Bun.which(n),
-    requestAccessibility: () => (platform === "darwin" ? realAxPrompt() : null),
-    requestAutomation: (b) => (platform === "darwin" ? realAutomation(b, true) : "unknown"),
+    requestAccessibility: () => (platform === "darwin" ? boundedRequestAx() : null),
+    requestAutomation: (b) => (platform === "darwin" ? boundedRequestAutomation(b) : "unknown"),
     // read-only here, but keep the same sandbox rule as the hook commands
     hookFiles: () => hookTargets().files,
     desktop: () => (platform === "win32" ? { station: winStation(), idle: winIdle() } : { station: null, idle: null }),

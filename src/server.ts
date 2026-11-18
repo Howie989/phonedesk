@@ -28,7 +28,8 @@ import { AiHub, QUOTA_SOURCE, realAiSources, type AiProviderId, type AiSources }
 import { agyPath } from "./ai/antigravity";
 import { ToolStates, type ToolState } from "./ai/states";
 import { detectOpencode, opencodeDataFound, installPlugin, isPluginInstalled, opencodePath, pluginPath, readOpencodeSessions, uninstallPlugin } from "./ai/opencode";
-import { grokDataFound, grokHookFile, grokPath, installGrokHook, isGrokHookInstalled, readGrokSessions, uninstallGrokHook } from "./ai/grok";
+import { UpdateChecker } from "./update";
+import { grokDataFound, grokQuota, grokHookFile, grokPath, installGrokHook, isGrokHookInstalled, readGrokSessions, uninstallGrokHook } from "./ai/grok";
 import { PermissionBroker, ensureHookSecret, parseHookInput, secretMatches, PERMISSION_TIMEOUT_MS } from "./permissions";
 import { classifyRisk } from "./risk";
 import { askHookCommand, hookCommand, hookConfigPath, installAskHook, installHook, isAskHookInstalled, isHookInstalled, uninstallAskHook, uninstallHook, type HookTool } from "./hooks-install";
@@ -101,6 +102,8 @@ export interface StartOptions {
   hookPaths?: Partial<Record<HookTool, string>>;
   /** Where the OpenCode plugin / the Grok hook file go (tests point these into a temp dir). */
   opencodePluginFile?: string;
+  /** Tests: a checker with a fake release lookup. */
+  updateChecker?: import("./update").UpdateChecker;
   grokHookFile?: string;
   /** Claude's questions on the phone: settings file, idle-time reader (seconds, null = unknown) and timeout (tests). */
   askSettingsFile?: string;
@@ -172,10 +175,12 @@ export async function startServer(opts: StartOptions = {}) {
     return {
     installed: bin !== null || grokDataFound(), ...(bin ? { binary: bin } : {}), sessions: recent.length, total: all.length, running: recent.filter((s) => s.running).length,
     ...(all[0] ? { lastSessionAt: all[0].updatedAt } : {}), sessionsRule: "sessions updated in the last 7 days, newest first; idle unless active_sessions.json lists them (running) or a hook reports busy/waiting",
-    quota: null, quotaReason: "Grok has no usage API",
+    quota: await grokQuota().then((q) => (q.windows.length || q.plan ? q : null)).catch(() => null),
+    quotaReason: "Usage comes from the Grok CLI itself (grok agent stdio, an internal and undocumented method); PhoneDesk never reads your Grok login or cookies",
     hook: { installed: await isGrokHookInstalled(opts.grokHookFile ?? grokHookFile()), path: opts.grokHookFile ?? grokHookFile() },
     };
   };
+  const updates = opts.updateChecker ?? new UpdateChecker();
   const pathFor = (t: HookTool) => opts.hookPaths?.[t] ?? hookConfigPath(t);
   let layout: Layout = await loadLayout();
   setLanguage(layout.theme?.language);
@@ -424,7 +429,7 @@ export async function startServer(opts: StartOptions = {}) {
   const pushAi = () => {
     const ai = hub.snapshot();
     const q: Partial<Record<"claude" | "codex" | "antigravity" | "opencode", number>> = {};
-    for (const pr of ai.providers) if (pr.windows.length && pr.id !== "grok") q[pr.id] = Math.max(...pr.windows.map((w) => w.usedPercent));
+    for (const pr of ai.providers) { const used = pr.windows.flatMap((w) => (w.usedPercent === null ? [] : [w.usedPercent])); if (used.length && pr.id !== "grok") q[pr.id] = Math.max(...used); }
     rules.setQuota(q);
     rules.setAiInput(ai.sessions.filter((x) => x.state === "waiting" && !x.prompt).map((x) => x.tool));
     broadcast({ type: "ai", ai });
@@ -497,11 +502,18 @@ export async function startServer(opts: StartOptions = {}) {
 
   const sndPhone = /^\/sounds\/[^/]+$/;
 
+  /** A request that takes more than 10 s is logged (once, while it is still running): a hung route shows up in agent.err.log. */
+  const slowWatch = <A extends unknown[], R>(h: (req: Request, ...rest: A) => Promise<R>) => async (req: Request, ...rest: A): Promise<R> => {
+    const t0 = Date.now();
+    const timer = setTimeout(() => console.warn(`[watchdog] ${req.method} ${new URL(req.url).pathname} has been running for more than 10 s`), 10_000);
+    try { return await h(req, ...rest); } finally { clearTimeout(timer); const ms = Date.now() - t0; if (ms > 10_000) console.warn(`[watchdog] ${req.method} ${new URL(req.url).pathname} finished after ${Math.round(ms / 1000)} s`); }
+  };
+
   const server = Bun.serve<WsData>({
     idleTimeout: 120, // permission hooks long-poll for up to 55 s
     port: opts.port ?? 7420,
     hostname: opts.hostname ?? "0.0.0.0",
-    async fetch(req, server) {
+    fetch: slowWatch(async (req: Request, server: any) => {
       const url = new URL(req.url);
       const path = url.pathname;
 
@@ -792,6 +804,11 @@ export async function startServer(opts: StartOptions = {}) {
         if (denied) return denied;
         return json(aboutInfo());
       }
+      if (path === "/api/update" && req.method === "GET") {
+        const denied = guardLocal(server, req);
+        if (denied) return denied;
+        return json(await updates.get(layout.theme?.updateCheck !== false, url.searchParams.get("refresh") === "1"));
+      }
       if (path === "/api/platform" && req.method === "GET") {
         const denied = guardLocal(server, req);
         if (denied) return denied;
@@ -811,8 +828,8 @@ export async function startServer(opts: StartOptions = {}) {
         if (!what) return json({ error: "this check cannot be requested" }, 400);
         const probes = doctorProbes();
         // shows macOS's own prompt for THIS process (the phonedesk binary under the LaunchAgent)
-        if (what.kind === "accessibility") probes.requestAccessibility();
-        else probes.requestAutomation(what.bundle!);
+        if (what.kind === "accessibility") await probes.requestAccessibility();
+        else await probes.requestAutomation(what.bundle!);
         const item = (await doctorReport()).items.find((i) => i.id === what.id);
         return json({ ok: true, item });
       }
@@ -1038,7 +1055,7 @@ export async function startServer(opts: StartOptions = {}) {
         }
       }
       return json({ error: "not found" }, 404);
-    },
+    }),
     websocket: {
       async open(ws) {
         if (!ws.data.deviceId) {

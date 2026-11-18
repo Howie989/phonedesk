@@ -51,7 +51,7 @@ const TOOLS: Info[] = [
   {
     id: "grok",
     name: "Grok",
-    reads: "Reads Grok's local session data on this Mac (project, state, time). Grok has no usage API, so there is no quota. Never reads the content of questions or answers.",
+    reads: "Reads Grok's local session data on this Mac (project, state, time) and your usage from the Grok CLI. Never reads the content of questions or answers.",
     defaultPath: "~/.grok/hooks/phonedesk.json",
   },
 ];
@@ -237,7 +237,7 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
             <h3 className="text-[15px] font-semibold leading-tight">{tool.name}</h3>
             <p className="text-xs text-muted-foreground">
               {noQuotaTool && info
-                ? [info.version && t("Version {v}", { v: info.version }), info.sessions !== undefined && t("{n} sessions", { n: info.sessions })].filter(Boolean).join(" · ") || t("Sessions")
+                ? [info.version && t("Version {v}", { v: info.version }), info.plan && t("{plan} plan", { plan: info.plan }), info.sessions !== undefined && t("{n} sessions", { n: info.sessions })].filter(Boolean).join(" · ") || t("Sessions")
                 : info?.plan ? t("{plan} plan", { plan: info.plan }) : t("Quota and sessions")}
             </p>
           </div>
@@ -258,7 +258,8 @@ function ToolCard({ tool, info, onChanged, backendMissing, busy, onToggle }: {
         {info && <QuotaBars info={info} />}
         {info?.error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">{info.error}</p>}
         {noQuotaTool && !info?.windows.length && info?.quotaReason && !missing && <p className="text-xs text-muted-foreground">{t(info.quotaReason)}</p>}
-        {source && (
+        {tool.id === "grok" && !!info?.windows.length && <p className="text-xs text-muted-foreground">{t("From the Grok CLI (internal method, may change)")}</p>}
+        {source && tool.id !== "grok" && (
           <p className="text-xs text-muted-foreground">
             {t("Source:")} <span className="font-medium text-foreground">{source}</span>
           </p>

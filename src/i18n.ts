@@ -176,6 +176,7 @@ const vi: Record<string, string> = {
   "Accessibility": "Trợ năng (Accessibility)",
   "macOS only": "chỉ có trên macOS",
   "could not ask macOS": "không hỏi được macOS",
+  "macOS did not answer": "macOS không trả lời",
   "granted to {who}": "đã cấp cho {who}",
   "not granted to {who}: key press and typing tiles will not work": "chưa cấp cho {who}: các ô gửi phím và gõ chữ sẽ không chạy",
   "Open System Settings > Privacy & Security > Accessibility and turn {who} on. Run `phonedesk doctor --request accessibility` to make it appear in the list.": "Mở Cài đặt hệ thống > Quyền riêng tư & Bảo mật > Trợ năng và bật {who}. Chạy `phonedesk doctor --request accessibility` để nó hiện trong danh sách.",

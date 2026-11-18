@@ -14,6 +14,7 @@
 #   --no-autostart      do not start PhoneDesk at login (no launchd service)
 #   --no-start          install only; do not start the agent
 #   --no-open           do not open the management page in the browser
+#   --force             reinstall even when this version is already installed and intact
 #   --no-path           do not put `phonedesk` on your PATH (default: a symlink in ~/.local/bin when that is on PATH,
 #                       else one marked line in ~/.zshrc / ~/.bash_profile)
 #   --dry-run           download and verify, show what would happen, change nothing
@@ -26,7 +27,7 @@
 set -euo pipefail
 
 repo="howznguyen/phonedesk"
-yes=0; version="${PHONEDESK_VERSION:-}"; version="${version#v}"; port=7420; autostart=1; start=1; open_page=1; dry=0; add_path=1
+yes=0; version="${PHONEDESK_VERSION:-}"; version="${version#v}"; port=7420; autostart=1; start=1; open_page=1; dry=0; add_path=1; force=0; [ "${PHONEDESK_FORCE:-}" = 1 ] && force=1
 tmp=""
 
 if [ -t 1 ]; then c_step=$'\033[36m'; c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_off=$'\033[0m'
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
     --no-start) start=0 ;;
     --no-open) open_page=0 ;;
     --no-path) add_path=0 ;;
+    --force) force=1 ;;
     --version) shift; [ $# -gt 0 ] || die "--version needs a value"; version="${1#v}" ;;
     --version=*) version="${1#--version=}"; version="${version#v}" ;;
     --port) shift; [ $# -gt 0 ] || die "--port needs a value"; port="$1" ;;
@@ -172,12 +174,14 @@ child_env=(PHONEDESK_HOME="$data_dir")
 if [ -n "${PHONEDESK_INSTALL_HOME:-}" ]; then
   child_env+=(PHONEDESK_LAUNCH_AGENTS_DIR="${PHONEDESK_LAUNCH_AGENTS_DIR:-$home_dir/Library/LaunchAgents}" PHONEDESK_CLAUDE_DIR="${PHONEDESK_CLAUDE_DIR:-$home_dir/.claude}" PHONEDESK_CODEX_DIR="${PHONEDESK_CODEX_DIR:-$home_dir/.codex}")
 fi
+agents_dir="${PHONEDESK_LAUNCH_AGENTS_DIR:-$home_dir/Library/LaunchAgents}"
 run_bin() { env "${child_env[@]}" "$@"; }
 
 # ---------- helpers: PATH and port ----------
 PATH_MARK='# phonedesk'
 path_line='export PATH="$HOME/.phonedesk/bin:$PATH" # phonedesk'
 path_how=""      # what we did, for the final output: symlink | rc
+path_state=""    # installed | already
 path_rc_files="" # the rc files we touched or found already set up
 
 # Makes `phonedesk` available: a symlink in ~/.local/bin when that directory is on PATH, else the marked export line in
@@ -188,8 +192,8 @@ add_to_path() {
     *":$local_bin:"*)
       if [ -d "$local_bin" ] && { [ ! -e "$local_bin/phonedesk" ] || [ -L "$local_bin/phonedesk" ]; }; then
         target="$(readlink "$local_bin/phonedesk" 2>/dev/null || true)"
-        if [ "$target" != "$bin" ]; then ln -sf "$bin" "$local_bin/phonedesk"; fi
-        ok "phonedesk is on your PATH ($local_bin/phonedesk -> $bin)"
+        if [ "$target" = "$bin" ]; then info "phonedesk is already on your PATH ($local_bin/phonedesk)"; path_state=already
+        else ln -sf "$bin" "$local_bin/phonedesk"; ok "phonedesk is on your PATH ($local_bin/phonedesk -> $bin)"; path_state=installed; fi
         path_how=symlink; return 0
       fi ;;
   esac
@@ -200,17 +204,36 @@ add_to_path() {
   if [ "${#files[@]}" = 0 ]; then
     if [ "$shell_name" = bash ]; then files+=("$home_dir/.bash_profile"); else files+=("$home_dir/.zshrc"); fi
   fi
+  path_state=already
   for f in "${files[@]}"; do
     if grep -qF "$PATH_MARK" "$f" 2>/dev/null && grep -F "$PATH_MARK" "$f" | grep -qF ".phonedesk/bin"; then
-      info "$f already has the PhoneDesk PATH line"
+      info "phonedesk is already on your PATH ($f has the line)"
     else
       [ -s "$f" ] && [ "$(tail -c1 "$f" | wc -l | tr -d " ")" = 0 ] && printf '\n' >>"$f"
       printf '%s\n' "$path_line" >>"$f"
-      ok "added the PATH line to $f"
+      ok "added the PATH line to $f"; path_state=installed
     fi
     path_rc_files="$path_rc_files $f"
   done
   path_how=rc
+}
+
+expected_sum() { # expected_sum name sums-file -> the lowercase sha256 listed for name
+  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print tolower($1); exit } }' "$2"
+}
+service_matches() { # the launchd agent exists, runs THIS binary on THIS port, and is loaded
+  local plist="$agents_dir/dev.phonedesk.agent.plist"
+  [ -f "$plist" ] || return 1
+  # the plist is the one WE wrote (its checksum is recorded in .release), so it runs the program installed here
+  [ "$(sed -n 's/^svc=//p' "$bin_dir/.release" 2>/dev/null)" = "$(sha256_of "$plist" | tr 'A-F' 'a-f')" ] || return 1
+  if [ "$port" = 7420 ]; then ! grep -qF "<string>--port</string>" "$plist"; else grep -F -A1 "<string>--port</string>" "$plist" | grep -qF "<string>$port</string>"; fi || return 1
+  "${PHONEDESK_LAUNCHCTL:-launchctl}" print "gui/$(id -u)/dev.phonedesk.agent" >/dev/null 2>&1
+}
+
+record_service() { # remember the checksum of the plist we just wrote
+  local plist="$agents_dir/dev.phonedesk.agent.plist" r="$bin_dir/.release"
+  [ -f "$plist" ] && [ -f "$r" ] || return 0
+  { grep -v '^svc=' "$r" || true; printf 'svc=%s\n' "$(sha256_of "$plist" | tr 'A-F' 'a-f')"; } >"$r.tmp" && mv -f "$r.tmp" "$r"
 }
 
 # Who listens on a TCP port on this machine: prints "pid<TAB>command line", nothing when the port is free or lsof is missing.
@@ -282,6 +305,22 @@ fi
 
 # ---------- 3. download and check ----------
 fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "could not download $base/SHA256SUMS"
+
+# Already installed and intact? Setup leaves $bin_dir/.release with the sha256 of the release file it installed and of the file
+# on disk (it is signed again locally, so the two differ). Same release sum + untouched file + it runs = nothing to download.
+old_version=""
+if [ -x "$bin" ]; then old_version="$(run_bin "$bin" --version 2>/dev/null | head -n1 || true)"; fi
+up_to_date=0
+want_raw="$(expected_sum "$asset" "$tmp/SHA256SUMS")"
+if [ "$force" = 0 ] && [ -n "$old_version" ] && [ -n "$want_raw" ] && [ -f "$bin_dir/.release" ]; then
+  rel_raw="$(sed -n 's/^raw=\([0-9a-f]*\).*/\1/p' "$bin_dir/.release")"; rel_inst="$(sed -n 's/.* installed=\([0-9a-f]*\).*/\1/p' "$bin_dir/.release")"
+  if [ "$rel_raw" = "$want_raw" ] && [ -n "$rel_inst" ] && [ "$(sha256_of "$bin" | tr 'A-F' 'a-f')" = "$rel_inst" ]; then up_to_date=1; fi
+fi
+if [ "$up_to_date" = 1 ]; then
+  new_version="$old_version"
+  ok "PhoneDesk $(printf '%s' "$old_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p') is already installed (checksum matches); nothing to download"
+fi
+if [ "$up_to_date" = 0 ]; then
 # Releases publish a gzip of every binary (about a third of the size). Use it when SHA256SUMS lists it and it downloads;
 # older releases only have the raw binary, so fall back to that.
 got_raw=0
@@ -303,6 +342,7 @@ if [ "$got_raw" = 0 ]; then
   fetch_big "$base/$asset" "$tmp/$asset" || die "could not download $base/$asset"
 fi
 check_sum "$tmp/$asset" "$tmp/SHA256SUMS" # always the binary itself, whichever way it arrived
+raw_sha="$(sha256_of "$tmp/$asset" | tr 'A-F' 'a-f')"
 chmod 755 "$tmp/$asset"
 if have xattr; then xattr -d com.apple.quarantine "$tmp/$asset" 2>/dev/null || true; fi
 # release binaries are ad-hoc signed in CI; sign again here so the signature is valid for this exact file on this Mac
@@ -312,25 +352,24 @@ fi
 new_version="$("$tmp/$asset" --version 2>/dev/null | head -n1)" || new_version=""
 [ -n "$new_version" ] || die "the downloaded binary does not run on this Mac (it printed no version)"
 ok "$new_version"
-
-old_version=""
-if [ -x "$bin" ]; then old_version="$(run_bin "$bin" --version 2>/dev/null | head -n1 || true)"; fi
+fi # up_to_date = 0
 
 # ---------- 4. install ----------
 step "Installing"
 info "program:  $bin"
 info "your data stays in $data_dir"
-[ -z "$old_version" ] || info "replacing $old_version"
+if [ "$up_to_date" = 1 ]; then info "up to date: $old_version"; elif [ -n "$old_version" ]; then info "replacing $old_version"; fi
 if [ "$dry" = 1 ]; then
   caution "dry run: nothing was installed, started or changed"
   [ "$autostart" = 1 ] && info "would install the launchd service dev.phonedesk.agent (start at login)"
   info "would start PhoneDesk on port $port and open http://localhost:$port/manage/"
   exit 0
 fi
+bin_state="already set"
+svc_before=0; [ -f "$agents_dir/dev.phonedesk.agent.plist" ] && svc_before=1
+if [ "$up_to_date" = 0 ]; then
 ask "Install PhoneDesk to $bin?" y || die "cancelled; nothing was installed"
-if [ "$autostart" = 1 ]; then
-  ask "Start PhoneDesk automatically when you log in?" y || autostart=0
-fi
+if [ -n "$old_version" ]; then bin_state="updated ($(printf '%s' "$old_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p') -> $(printf '%s' "$new_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p'))"; else bin_state=installed; fi
 
 # stop what is running so the file can be replaced: the service first, then a manually started agent
 if [ -x "$bin" ]; then run_bin "$bin" service uninstall >/dev/null 2>&1 || true; fi
@@ -345,32 +384,49 @@ chmod 700 "$data_dir" 2>/dev/null || true
 cp "$tmp/$asset" "$bin_dir/.phonedesk.new"
 chmod 755 "$bin_dir/.phonedesk.new"
 mv -f "$bin_dir/.phonedesk.new" "$bin"  # atomic replace on the same volume
+printf 'raw=%s installed=%s\n' "$raw_sha" "$(sha256_of "$bin" | tr 'A-F' 'a-f')" >"$bin_dir/.release"
 ok "installed $new_version"
+fi # up_to_date = 0
+path_state="skipped"
 if [ "$add_path" = 1 ]; then add_to_path; fi
+# the launchd agent: keep it when it already runs this binary on this port, otherwise (re)install it
+svc_state="skipped"
+if [ "$autostart" = 1 ] && service_matches && [ "$up_to_date" = 1 ]; then
+  svc_state="already set"; autostart=2
+elif [ "$autostart" = 1 ]; then
+  ask "Start PhoneDesk automatically when you log in?" y || autostart=0
+fi
 
 # ---------- 5. start ----------
 if [ "$start" = 1 ]; then
   holder="$(port_holder "$port")"
-  if [ -n "$holder" ]; then
+  already_running=0
+  if [ -n "$holder" ] && [ "$up_to_date" = 1 ] && [ "$(agent_version_line "$port")" = "$new_version" ]; then
+    already_running=1; info "PhoneDesk is already running on port $port"
+  elif [ -n "$holder" ]; then
     holder_pid="${holder%%$'\t'*}"; holder_cmd="${holder#*$'\t'}"
     die "port $port is already in use by process $holder_pid ($holder_cmd). Stop it with: kill $holder_pid   (or install on another port: --port 7421). The program is installed at $bin; nothing was started."
   fi
 fi
-if [ "$autostart" = 1 ] && [ "$start" = 1 ]; then
+if [ "$autostart" = 2 ]; then
+  ok "the background service is already set up (same program, port $port); keeping it"
+  autostart=1
+elif [ "$autostart" = 1 ] && [ "$start" = 1 ]; then
   step "Setting up the background service"
   if run_bin "$bin" service install --port "$port"; then
     ok "PhoneDesk will start at login and restart if it crashes (logs: $log_dir)"
+    if [ "$svc_before" = 1 ]; then svc_state=updated; else svc_state=installed; fi; record_service
   else
     caution "could not install the service; starting PhoneDesk without it"
     autostart=0
   fi
 elif [ "$autostart" = 1 ]; then
-  run_bin "$bin" service install --port "$port" >/dev/null 2>&1 || caution "could not install the service"
+  if run_bin "$bin" service install --port "$port" >/dev/null 2>&1; then if [ "$svc_before" = 1 ]; then svc_state=updated; else svc_state=installed; fi; record_service; else caution "could not install the service"; fi
 fi
 # make sure installed Claude/Codex hooks (if any) point at this binary
 run_bin "$bin" hooks repoint --port "$port" >/dev/null 2>&1 || true
 
-if [ "$start" = 1 ] && [ "$autostart" = 0 ]; then
+if [ "$start" = 1 ] && [ "$autostart" = 0 ] && [ "${already_running:-0}" = 0 ]; then
   step "Starting PhoneDesk"
   # exec keeps one process, so the pid written below is the agent's own and a later update can stop it
   ( cd "$data_dir" && exec env "${child_env[@]}" nohup "$bin" --port "$port" >>"$log_dir/agent.out.log" 2>>"$log_dir/agent.err.log" </dev/null ) &
@@ -404,19 +460,20 @@ $log_tail"
   printf '\n  Phone URL:  %s\n  Pairing PIN: %s\n  Manage:     http://localhost:%s/manage/\n\n' "${url:-http://<this-computer>:$port}" "${pin:-see the terminal / logs}" "$port"
   if [ -t 1 ] && [ -n "$pin" ] && [ -n "$url" ]; then "$bin" qr "${url_local:-$url}" 2>/dev/null || true; fi
   info "Open the phone URL on a phone on the same Wi-Fi and enter the PIN."
-  if [ "$open_page" = 1 ] && have open && [ -z "${PHONEDESK_INSTALL_HOME:-}" ]; then
+  if [ "$open_page" = 1 ] && have open && [ -z "${PHONEDESK_INSTALL_HOME:-}" ] && ! { [ "$up_to_date" = 1 ] && [ "${already_running:-0}" = 1 ]; }; then
     if ask "Open the management page now?" y; then open "http://localhost:$port/manage/" >/dev/null 2>&1 || true; fi
   fi
 else
   info "Installed. Start it with: $bin"
 fi
 step "Done"
-if [ "$add_path" = 1 ] && [ "$path_how" = rc ]; then
+printf '    %-9s %s\n' "Program" "$bin_state" "PATH" "${path_state/already/already set}" "Service" "$svc_state"
+if [ "$add_path" = 1 ] && [ "$path_how" = rc ] && [ "$path_state" = installed ]; then
   rc_main="${path_rc_files# }"; rc_main="${rc_main%% *}"
   info "Open a new terminal, then run: phonedesk doctor"
   info "To use it in THIS terminal right now: source ${rc_main/#$home_dir/~}   (or: export PATH=\"\$HOME/.phonedesk/bin:\$PATH\")"
-elif [ "$add_path" = 1 ] && [ "$path_how" = symlink ]; then
-  info "Run: phonedesk doctor   (it is on your PATH already)"
+elif [ "$add_path" = 1 ] && [ -n "$path_how" ]; then
+  info "Run: phonedesk doctor   (it is on your PATH)"
 else
   info "Run: $bin doctor"
 fi

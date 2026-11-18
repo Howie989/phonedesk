@@ -105,7 +105,7 @@ export function ItemForm({ item, page, pages, accent, onChange, onDuplicate, onD
             {item.widget === "quota" && (
               <Field label={t("AI tool")} id="f-provider" hint={t("Which tool's quota this tile shows.")}>
                 <Select id="f-provider" value={item.provider ?? "claude"} onChange={(e) => set({ provider: e.target.value as AiProvider, quota: item.quota ? { ...item.quota, account: undefined } : undefined })}
-                  options={AI_PROVIDERS.map((p) => ({ value: p, label: p === "grok" ? `${PROVIDER_LABEL[p]} (${t("Grok has no usage API")})` : (PROVIDER_LABEL[p] ?? p), disabled: p === "grok" && item.provider !== "grok" }))} />
+                  options={AI_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] ?? p }))} />
               </Field>
             )}
           </>

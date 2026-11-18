@@ -165,10 +165,55 @@ if (argv[0] === "doctor") {
   console.log(d.formatReport(report, { color: !!process.stdout.isTTY }));
   process.exit(report.items.some((i) => i.status === "missing" || i.status === "denied") ? 1 : 0);
 }
-if (argv.includes("--help") || argv.includes("-h")) {
-  console.log("Usage: phonedesk [--port N]\n       phonedesk mcp [--port N]   MCP server (stdio) to arrange the deck with an AI\n       phonedesk service install|uninstall|status|restart [--port N]   run in the background at login (macOS, Windows)\n       phonedesk hooks repoint|remove   re-point or remove the Claude/Codex hooks\n       phonedesk doctor [--open <id>] [--request <id>] [--json]   check OS permissions (asks the running agent)\n       phonedesk --version\n       --no-qr   do not print the pairing QR code at start\n       phonedesk qr <text>   print a QR code in the terminal\n\nEnv: PHONEDESK_PORT, PHONEDESK_HOME");
+// `phonedesk __ae <bundle-id>`: internal. Prints the Automation permission state for one app (doctor asks a child so a stuck call cannot freeze the agent).
+if (argv[0] === "__ae") {
+  const { realAutomation } = await import("./doctor");
+  console.log(realAutomation(String(argv[1] ?? ""), argv[2] === "ask"));
   process.exit(0);
 }
+// `phonedesk __ax [prompt]`: internal, same idea for the Accessibility check (prompt = show macOS's own prompt).
+if (argv[0] === "__ax") {
+  const { realAxPrompt, realAxTrusted } = await import("./doctor");
+  console.log(String(argv[1] === "prompt" ? realAxPrompt() : realAxTrusted()));
+  process.exit(0);
+}
+// `phonedesk update [--version X] [--check]`: replaces this program with the latest (or the given) release.
+if (argv[0] === "update") {
+  const { runUpdate } = await import("./update");
+  const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1); };
+  const port = argv.includes("--port") || argv.some((a) => a.startsWith("--port=")) ? parsePort(argv) : Number(process.env.PHONEDESK_PORT) || 7420;
+  try {
+    await runUpdate({
+      check: argv.includes("--check"), version: flag("--version"), port, tty: !!process.stdout.isTTY,
+      restartService: async () => {
+        const svc = await import("./service");
+        const d = svc.realServiceDeps(() => {});
+        if (!(await svc.serviceStatus(d)).installed) return false;
+        await svc.serviceRestart(d);
+        return true;
+      },
+      agentVersion: async (p) => {
+        try { const r = await fetch(`http://127.0.0.1:${p}/api/about`, { headers: { "x-phonedesk": "1" }, signal: AbortSignal.timeout(2000) }); return r.ok ? String(((await r.json()) as any).version ?? "") || null : null; } catch { return null; }
+      },
+    });
+  } catch (err: any) {
+    console.error(`phonedesk update: ${err?.message ?? String(err)}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+if (argv[0] === "help" || argv.includes("--help") || argv.includes("-h")) {
+  console.log("Usage: phonedesk [--port N]\n       phonedesk mcp [--port N]   MCP server (stdio) to arrange the deck with an AI\n       phonedesk service install|uninstall|status|restart [--port N]   run in the background at login (macOS, Windows)\n       phonedesk hooks repoint|remove   re-point or remove the Claude/Codex hooks\n       phonedesk doctor [--open <id>] [--request <id>] [--json]   check OS permissions (asks the running agent)\n       phonedesk update [--version X] [--check]   install the latest release (or only check)\n       phonedesk --version\n       --no-qr   do not print the pairing QR code at start\n       phonedesk qr <text>   print a QR code in the terminal\n\nEnv: PHONEDESK_PORT, PHONEDESK_HOME");
+  process.exit(0);
+}
+
+// anything that is not an option is a command we do not know: never start the agent for it
+if (argv[0] && !argv[0].startsWith("-")) {
+  console.error(`phonedesk: unknown command "${argv[0]}". Run phonedesk --help`);
+  process.exit(2);
+}
+// Windows: the previous program, renamed while it was running by `phonedesk update`, can go now
+if (platform.id === "win32") { const { rm } = await import("node:fs/promises"); await rm(`${process.execPath}.old`, { force: true }).catch(() => {}); }
 
 import { qrText } from "./qr";
 const printed = { port: 0 };
@@ -181,8 +226,22 @@ const printPairing = (pin: string) => {
   console.log(`             http://${host}.local:${printed.port}/?pin=${pin}  (keeps working when the IP changes)\n`);
 };
 
-const app = await startServer({ port: parsePort(argv), onPinChange: (pin) => { console.log("Too many failed attempts, PIN regenerated."); printPairing(pin); } });
+const wantPort = parsePort(argv);
+let app: Awaited<ReturnType<typeof startServer>>;
+try {
+  app = await startServer({ port: wantPort, onPinChange: (pin) => { console.log("Too many failed attempts, PIN regenerated."); printPairing(pin); } });
+} catch (err: any) {
+  if (err?.code === "EADDRINUSE" || /in use/i.test(String(err?.message))) {
+    const { explainBusyPort } = await import("./busy");
+    console.error(`phonedesk: ${await explainBusyPort(wantPort, { service: async () => { const svc = await import("./service"); return (await svc.serviceStatus(svc.realServiceDeps(() => {}))).installed; } })}`);
+    process.exit(1);
+  }
+  throw err;
+}
 printed.port = app.port;
+// Event-loop watchdog: when something blocks the main thread (a synchronous call that never returns) the agent looks dead from outside.
+// A blocked loop cannot log while it is stuck, but a long stall that ends is recorded, with its length, in agent.err.log.
+{ let last = Date.now(); setInterval(() => { const now = Date.now(); if (now - last > 3000) console.warn(`[watchdog] the event loop was blocked for ${Math.round((now - last) / 1000)} s`); last = now; }, 1000).unref(); }
 
 console.log(`PhoneDesk running on port ${app.port}`);
 console.log(`Phone:  http://${lanIp()}:${app.port}  or  http://${host}.local:${app.port}`);

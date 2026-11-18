@@ -32,7 +32,7 @@ export const realAiSources = (states?: ToolStates): AiSources => ({
   codex: () => fetchCodexQuota(),
   antigravity: () => fetchAntigravityQuota(),
   opencode: async () => fetchOpencodeQuota({ version: await detectOpencode() }),
-  grok: async () => grokQuota(),
+  grok: () => grokQuota(),
   sessions: async (hints) => {
     const [base, oc, active, grok] = await Promise.all([
       listSessions(hints),

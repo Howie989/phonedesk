@@ -62,6 +62,7 @@ export const STATIC_ENTRIES: PaletteEntry[] = [
   quota("codex", "Codex"),
   quota("antigravity", "Antigravity", "#60a5fa"),
   quota("opencode", "OpenCode"),
+  quota("grok", "Grok"),
   { key: "w-sessions", group: "widget", path: ["AI"], label: "AI sessions", hint: "Running sessions", icon: "sparkles", size: [2, 3], tags: "sessions", make: () => widget("sessions") },
 
   { key: "m-play", group: "media", label: "Play / Pause", icon: "play", size: [1, 1], make: () => button(t("Play / Stop"), "play", { type: "media", command: "playpause" }) },
