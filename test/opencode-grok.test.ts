@@ -416,7 +416,8 @@ describe("agent: /api/hooks/state, /api/integrations and the install endpoints",
   });
 });
 
-describe("Grok usage through `grok agent stdio` (fake CLI)", () => {
+// The fake CLI is a bash script, which Windows cannot run; the parser and quota shaping are covered on every OS above.
+describe.skipIf(process.platform === "win32")("Grok usage through `grok agent stdio` (fake CLI)", () => {
   // a fake grok: newline-delimited JSON-RPC on stdin/stdout; MODE picks the behaviour; every start is logged to $LOG
   const fake = (mode: string, billing: unknown = {}) => {
     const d = tmp();
