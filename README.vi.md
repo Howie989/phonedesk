@@ -33,7 +33,7 @@ cài app trên điện thoại, không cần tài khoản hay dịch vụ đám 
 | **Hằng ngày** | Đang phát kèm ảnh bìa và nút phát tiếp, 6 kiểu đồng hồ và giờ thế giới, thời tiết (theo giờ, theo ngày, °C hoặc °F), soundboard, thông báo |
 | **Home Assistant** | Đèn có màu, nhiệt độ màu, cảnh và hiệu ứng; điều hòa (chế độ, quạt, đảo gió), quạt, rèm, robot hút bụi, khóa và cảm biến (tùy chọn) |
 | **Tự động hóa** | Webhook đẩy giá trị và thông báo, rule phản ứng theo hoạt động trên máy |
-| **Tùy biến** | Lưới kéo thả (8×3, 8×2, 5×3…), 4 kiểu ô (Soft, Solid, Outline, iOS), màu riêng cho từng ô, hơn 5.000 icon, tiếng Anh hoặc tiếng Việt |
+| **Tùy biến** | Lưới kéo thả (8×4, 8×3, 5×3…) có xem trước theo từng cỡ màn hình, 4 kiểu ô (Soft, Solid, Outline, iOS), màu riêng cho từng ô, hơn 5.000 icon, tiếng Anh hoặc tiếng Việt |
 
 Layout là lưới ô vuông cố định, sắp xếp bằng kéo thả ở trang quản lý `http://localhost:7420/manage/`. Có MCP server để
 trợ lý AI sắp xếp layout giúp bạn. Chạy trên macOS, và Windows 10/11 (thử nghiệm).
@@ -106,6 +106,20 @@ Từ giờ PhoneDesk tự chạy mỗi khi bạn đăng nhập, và lệnh `phon
 Trên máy tính, mở **http://localhost:7420/manage/** trong trình duyệt. Kéo app, phím tắt và widget vào khung điện thoại,
 rồi bấm **Save**. Điện thoại cập nhật ngay.
 
+- **Cỡ màn hình:** chọn loại điện thoại (iPhone 5s/SE, iPhone, Pro Max, Android, iPad hoặc tự nhập) phía trên khung xem
+  trước để thấy đúng những gì máy sẽ hiện. Khi ô quá nhỏ, khó bấm, trang sẽ cảnh báo.
+- **Giao diện:** chế độ sáng tối, kiểu bo góc, kiểu ô, hướng màn hình và màu nhấn đều là thẻ có hình minh họa, nhìn là
+  biết kết quả trước khi chọn.
+- **Từng ô:** chọn màu, kiểu tô và kích thước (từ 1×1 tới 4×3) qua các hình xem trước nhỏ.
+
+<table>
+<tr><td colspan="2"><img src="docs/images/manage-screen-size.png" alt="Trang quản lý xem trước ở cỡ iPhone 5s, kèm ô chọn cỡ màn hình"></td></tr>
+<tr>
+<td width="50%"><img src="docs/images/manage-theme.png" alt="Tùy chọn giao diện dạng thẻ có hình"></td>
+<td width="50%"><img src="docs/images/manage-tile.png" alt="Chọn kích thước và kiểu tô cho ô"></td>
+</tr>
+</table>
+
 Lần đầu một phím gửi phím tắt, macOS sẽ hỏi quyền **Trợ năng (Accessibility)**: hãy cho phép (Cài đặt hệ thống → Quyền riêng
 tư & Bảo mật → Trợ năng). Windows hỏi một lần cho PhoneDesk dùng mạng: hãy cho phép.
 
@@ -118,6 +132,8 @@ tư & Bảo mật → Trợ năng). Windows hỏi một lần cho PhoneDesk dùn
 | Tải chậm | File khoảng 20 MB (Windows 40 MB). Cứ để chạy, thanh tải cho thấy tiến độ. |
 | `phonedesk: command not found` | Mở một cửa sổ terminal **mới**. |
 | Bấm phím trên Mac không có tác dụng | Cho phép **Trợ năng** cho PhoneDesk, rồi chạy `phonedesk doctor` để xem còn thiếu gì. |
+| Phím ngừng hoạt động sau khi cập nhật | macOS gắn quyền Trợ năng với từng bản build. Vào trang quản lý, tab **Permissions**, bấm **Đặt lại và hỏi lại** (hoặc chạy `phonedesk doctor --request accessibility --reset`) rồi bật phonedesk. |
+| Điện thoại cũ không mở được địa chỉ `.local` | Dùng địa chỉ IP mà bộ cài in ra, và đặt IP cố định cho máy tính trong router để IP không đổi. |
 | `port 7420 is in use` | Có chương trình khác đang dùng cổng đó. Chạy lại bộ cài với `--port 7421` (Mac: `… \| bash -s -- --port 7421`). |
 
 ### Cập nhật hoặc gỡ

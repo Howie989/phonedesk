@@ -210,14 +210,16 @@ export function EntityTile(props: EntityProps) {
 
   const tw = props.tw
   const th = props.th
-  const pad = tw >= 170 ? 14 : 10
   const row = tw >= th * 1.7 && th < 130
-  const isz = row ? Math.round(Math.min(th - pad * 2, 44)) : Math.round(Math.max(22, Math.min(40, Math.min(th * 0.3, tw * 0.3)))) * Math.min(1.2, props.scale)
+  // 1x1 on a small phone: icon plus one line (the value or the state), no name; everything scaled to the cell
+  const tiny = !row && th < 84 && tw < 110
+  const pad = tiny ? 7 : tw >= 170 ? 14 : 10
+  const isz = tiny ? Math.round(Math.max(20, Math.min(30, th * 0.4))) : row ? Math.round(Math.min(th - pad * 2, 44)) : Math.round(Math.max(22, Math.min(40, Math.min(th * 0.3, tw * 0.3)))) * Math.min(1.2, props.scale)
   const nameSize = Math.max(10, Math.min(15, Math.round(12.5 * Math.min(1.25, props.scale))))
   const avail = (row ? tw - pad * 2 - isz - 10 : tw - pad * 2)
   const vLen = (value + unit).length
   const vSize = value ? Math.max(14, Math.min(Math.floor(th * (row ? 0.4 : 0.26)), Math.floor(avail / (Math.max(2, vLen) * 0.58)), 44)) : 0
-  const showName = props.showLabel || !!cfg.name
+  const showName = !tiny && (props.showLabel || !!cfg.name)
   const compactStp = isClimate && !gone && raw !== 'off' && row && !!props.onStep && tw < 260
   const nameText = compactStp && roomShort ? name + ' · ' + roomShort : name
 
@@ -251,7 +253,7 @@ export function EntityTile(props: EntityProps) {
           {nameText}
         </span>
       ) : null}
-      {line && (th >= 110 || !value) ? (
+      {line && (th >= 110 || !value) && !(tiny && textVal) ? (
         <span class="pd-ent__s" style={{ fontSize: Math.max(10, nameSize - 1) + 'px', color: sub }}>
           {line}
         </span>
@@ -301,7 +303,7 @@ export function EntityTile(props: EntityProps) {
   const style: { [k: string]: string } = { background: bg }
   if (!props.connected || gone) style.opacity = gone ? '0.6' : '0.75'
   return (
-    <div class={'pd-ent' + (row ? ' pd-ent--row' : '') + (hot ? ' pd-ent--on' : '') + (lit ? ' pd-ent--lit' : '') + (sw$ ? ' pd-ent--sw' : '')} style={Object.assign({ padding: pad + 'px' }, style)} aria-label={name + ': ' + (value ? value + unit : line)}>
+    <div class={'pd-ent' + (tiny ? ' pd-ent--tiny' : '') + (row ? ' pd-ent--row' : '') + (hot ? ' pd-ent--on' : '') + (lit ? ' pd-ent--lit' : '') + (sw$ ? ' pd-ent--sw' : '')} style={Object.assign({ padding: pad + 'px' }, style)} aria-label={name + ': ' + (value ? value + unit : line)}>
       {stp && tw < 260 ? null : icon$}
       {text$}
       {stp && tw < 260 ? null : chip}

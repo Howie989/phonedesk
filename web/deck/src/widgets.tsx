@@ -256,7 +256,7 @@ function Metric(props: WidgetProps) {
   // ring / donut: circular, beside the numbers when the tile is wide
   if ((chart === 'ring' || chart === 'donut') && s) {
     const wide = props.tw >= props.th * 1.5 && props.tw >= 150
-    const dia = wide ? Math.max(40, Math.min(props.th - pad * 2, 200)) : Math.max(36, Math.min(avail, props.th - pad * 2 - lh, 200))
+    const dia = wide ? Math.max(40, Math.min(props.th - pad * 2, 200, Math.floor((props.tw - pad * 2) * 0.5))) : Math.max(36, Math.min(avail, props.th - pad * 2 - lh, 200))
     const centre = Math.round(pct) + '%'
     const fig =
       chart === 'donut' ? (
@@ -272,7 +272,9 @@ function Metric(props: WidgetProps) {
         </div>
       )
     }
-    const vs = Math.max(14, Math.min(34 * props.scale, Math.floor((props.th - pad * 2 - lh) * 0.4)))
+    // the number + unit must fit the room beside the ring (a 3x2 tile on a small phone left "GB" outside the tile)
+    const textW = Math.max(30, props.tw - pad * 2 - dia - 12)
+    const vs = Math.max(10, Math.min(34 * props.scale, Math.floor((props.th - pad * 2 - lh) * 0.4), fit(fmt(num).length + (unit ? 1 + Math.ceil(unit.length * 0.5) : 0), textW, 34, 10)))
     const free = s.memTotal ? (s.memTotal - s.memUsed) / GB : 0
     return (
       <div class="pd-metric pd-metric--circ" style={{ padding: pad + 'px' }}>
@@ -327,7 +329,7 @@ function Metric(props: WidgetProps) {
   const sparkH = noChart ? 0 : tallM ? Math.round(props.th * 0.5) : !compact ? Math.max(16, Math.min(isNet ? 70 : 60, Math.round(props.th * (isNet ? 0.34 : 0.22)))) : Math.max(12, Math.round(props.th * 0.2))
   const textRoom = props.th - sparkH - pad
   const maxV = (roomy ? 38 : 26) * props.scale * (chart === 'number' ? 1.6 : 1) * (tallM ? 1.3 : 1)
-  const vSize = Math.max(11, Math.min(fit(fmt(num).length + (unit ? 2 : 0), avail, maxV, 11), Math.floor(textRoom * (props.showLabel ? 0.5 : 0.7)) * (chart === 'number' ? 1.2 : 1)))
+  const vSize = Math.max(9, Math.min(fit(fmt(num).length + 1 + (unit ? 2 : 0), avail, maxV, 9), Math.floor(textRoom * (props.showLabel ? 0.5 : 0.7)) * (chart === 'number' ? 1.2 : 1)))
   const lSize = Math.max(8, Math.min(11, fit(label.length, avail, 11, 8)))
   const showSub = showSubOpt && (!!sub || isNet) && !compact && textRoom >= vSize + lSize + 30
   const showDelta = showDeltaOpt && !!delta && !compact && props.tw >= 150 && textRoom >= vSize + lSize + 6

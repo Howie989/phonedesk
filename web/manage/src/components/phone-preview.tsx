@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api";
-import { IconDeviceMobile as Iphone, IconRotateClockwise as RotateRight, IconDeviceTablet as Tablet } from "@tabler/icons-react";
+import { IconAlertTriangle as Warn, IconDeviceMobile as Iphone, IconRotateClockwise as RotateRight, IconDeviceTablet as Tablet } from "@tabler/icons-react";
 import { SegmentedControl } from "@/components/ui/knowns/segmented-control";
+import { Select } from "@/components/ui/knowns/select";
+import { Input } from "@/components/ui/knowns/input";
+import { CUSTOM_MAX, CUSTOM_MIN, SCREEN_PRESETS, useScreenSize } from "@/lib/screen-size";
 import { t, useLanguage } from "@/lib/i18n";
 import type { Layout } from "@/types";
 
@@ -70,7 +73,6 @@ function usePreviewAssets(layout: Layout): Record<string, unknown> {
 }
 
 export type Orientation = "portrait" | "landscape";
-const SIZE: Record<Orientation, [number, number]> = { portrait: [390, 844], landscape: [844, 390] };
 const BEZEL = 14;
 
 // In production the deck is served by the same agent at "/". VITE_AGENT overrides the origin (dev against another host).
@@ -91,7 +93,7 @@ export function usePreviewOrientation(themeOrientation: string | undefined): [Or
  * The real phone deck in an iframe inside a device frame, scaled to fit. Driven by postMessage:
  * we send {type:"pd-preview", layout, pageId, selectedId}; the deck answers pd-ready / pd-select / pd-page.
  */
-export function PhonePreview({ layout, override, ghost, controller, pageId, selectedId, orientation, onOrientation, onSelect, onMove, onResize, onPage }: {
+export function PhonePreview({ layout, override, ghost, controller, pageId, selectedId, orientation, onOrientation, onSelect, onMove, onResize, onPage, onEditGrid }: {
   layout: Layout;
   /** Tentative layout to draw instead of `layout` (live drag preview). */
   override?: Layout | null;
@@ -106,6 +108,8 @@ export function PhonePreview({ layout, override, ghost, controller, pageId, sele
   onMove?: (pageId: string, itemId: string, x: number, y: number) => void;
   onResize?: (pageId: string, itemId: string, w: number, h: number, x?: number, y?: number) => void;
   onPage?: (pageId: string) => void;
+  /** Jump to the page grid settings (offered when tiles are small). */
+  onEditGrid?: () => void;
 }) {
   useLanguage();
   const frame = useRef<HTMLIFrameElement>(null);
@@ -190,7 +194,16 @@ export function PhonePreview({ layout, override, ghost, controller, pageId, sele
     };
   }, [controller]);
 
-  const [w, h] = SIZE[orientation];
+  const [size, setSize] = useScreenSize();
+  const [lw, lh] = [Math.max(size.w, size.h), Math.min(size.w, size.h)];
+  const [w, h] = orientation === "portrait" ? [lh, lw] : [lw, lh];
+  // Cell size as the deck lays it out at this screen size (read from the same-origin iframe after it settles).
+  const [cell, setCell] = useState<number | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    const id = setTimeout(() => setCell(readGrid(frame.current, pageId)?.cell ?? null), 250);
+    return () => clearTimeout(id);
+  }, [ready, shown, pageId, w, h]);
   const fullW = w + BEZEL * 2;
   const fullH = h + BEZEL * 2;
   const scale = avail[0] > 0 && avail[1] > 0 ? Math.min(1, avail[0] / fullW, avail[1] / fullH) : 0;
@@ -208,7 +221,20 @@ export function PhonePreview({ layout, override, ghost, controller, pageId, sele
             { value: "landscape", label: t("Landscape"), icon: <Tablet className="size-3.5 -rotate-90" /> },
           ]}
         />
-        <span className="text-xs text-muted-foreground tabular-nums">{w}×{h}{scale > 0 && scale < 1 ? ` · ${Math.round(scale * 100)}%` : ""}</span>
+        <Select
+          size="sm"
+          aria-label={t("Screen size")}
+          className="w-[250px]"
+          value={size.preset}
+          onChange={(e) => setSize({ preset: e.target.value, w: size.w, h: size.h })}
+          options={[...SCREEN_PRESETS.map((p) => ({ value: p.id, label: `${t(p.label)} · ${p.w}×${p.h}` })), { value: "custom", label: t("Custom…") }]}
+        />
+        {size.preset === "custom" && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Input size="sm" type="number" min={CUSTOM_MIN} max={CUSTOM_MAX} aria-label={t("Width (px)")} className="w-[72px]" value={size.w} onChange={(e) => setSize({ preset: "custom", w: Number(e.target.value), h: size.h })} />×
+            <Input size="sm" type="number" min={CUSTOM_MIN} max={CUSTOM_MAX} aria-label={t("Height (px)")} className="w-[72px]" value={size.h} onChange={(e) => setSize({ preset: "custom", w: size.w, h: Number(e.target.value) })} />
+          </span>
+        )}
         <button
           type="button"
           onClick={() => {
@@ -265,6 +291,16 @@ export function PhonePreview({ layout, override, ghost, controller, pageId, sele
               </div>
             </div>
           </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+        <span className="tabular-nums" data-testid="preview-readout">{w} × {h}{cell ? ` · ${t("cell {n} px", { n: Math.round(cell) })}` : ""}{scale > 0 && scale < 1 ? ` · ${Math.round(scale * 100)}%` : ""}</span>
+        {cell !== null && cell < 64 && (
+          <span role="status" className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-amber-600 dark:text-amber-400">
+            <Warn className="size-3.5" />
+            {t("Tiles are small on this screen: fewer columns or the compact look helps")}
+            {onEditGrid && <button type="button" onClick={onEditGrid} className="font-medium underline underline-offset-2 hover:no-underline">{t("Change grid")}</button>}
+          </span>
         )}
       </div>
     </div>

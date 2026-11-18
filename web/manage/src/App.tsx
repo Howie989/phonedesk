@@ -17,6 +17,7 @@ import { SoundsPanel } from "@/components/sounds-panel";
 import { ThemePanel } from "@/components/theme-panel";
 import { PermissionsPanel } from "@/components/permissions-panel";
 import { AboutCard } from "@/components/about-card";
+import { CustomizeHint } from "@/components/visual-options";
 import { UpdateBanner } from "@/components/update-banner";
 import { useAbout } from "@/lib/about";
 import { setPlatform, usePlatform } from "@/lib/platform";
@@ -317,6 +318,7 @@ export default function App() {
 
       {layout && (
         <main key={lang} id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+          {(tab === "screens" || tab === "theme") && <div className="mb-3"><CustomizeHint /></div>}
           {tab === "screens" && (
             <ScreensPanel layout={layout} pageIdx={safePageIdx} itemId={itemId} setPageIdx={setPageIdx} setItemId={setItemId} update={update}
               orientation={orientation} onOrientation={setOrientation} />

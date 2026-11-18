@@ -51,6 +51,19 @@ export function buildHash(distDir: string): string {
   return h.digest("hex").slice(0, 10);
 }
 
+/**
+ * Build id the deck page carries (its <meta name="pd-build">), read from dist/build.json written by
+ * web/deck/vite.config.ts. The agent sends it in hello and the page reloads when they differ, so the two must be the
+ * same value; buildHash is only the fallback for a dist without build.json.
+ */
+export function deckBuildId(distDir: string): string {
+  try {
+    const j = JSON.parse(readFileSync(join(distDir, "build.json"), "utf8"));
+    if (typeof j?.build === "string" && j.build) return j.build;
+  } catch {}
+  return buildHash(distDir);
+}
+
 function section(name: string, distDir: string, outDir: string): string {
   const entries: string[] = [];
   if (existsSync(distDir)) {
@@ -110,7 +123,7 @@ export function generate(webDir: string, outFile: string, info: BuildInfo = { co
     "",
     rewritten,
     catalogLine,
-    `export const DECK_BUILD = ${JSON.stringify(buildHash(join(webDir, "deck", "dist")))};`,
+    `export const DECK_BUILD = ${JSON.stringify(deckBuildId(join(webDir, "deck", "dist")))};`,
     `export const BUILD_INFO: { commit: string; dirty: boolean; builtAt: string } = ${JSON.stringify(info)};`,
     "",
   ].join("\n");

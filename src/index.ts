@@ -138,7 +138,7 @@ if (argv[0] === "doctor") {
   const reqId = flag("--request");
   if (reqId) {
     if (!report) { console.error(`No PhoneDesk agent answered on port ${port}. Start it (or \`phonedesk service install\`) and try again: the prompt must come from the agent itself.`); process.exit(1); }
-    const r = await fetch(`${base}/api/doctor/request`, { ...post, body: JSON.stringify({ id: reqId }) });
+    const r = await fetch(`${base}/api/doctor/request`, { ...post, body: JSON.stringify({ id: reqId, reset: argv.includes("--reset") }) });
     const body = (await r.json()) as any;
     if (!r.ok) { console.error(body?.error ?? `request failed (${r.status})`); process.exit(1); }
     console.log(`Asked ${platform.label} for "${reqId}". Answer the prompt if one appeared, then run \`phonedesk doctor\` again.`);

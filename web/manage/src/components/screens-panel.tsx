@@ -185,6 +185,7 @@ export function ScreensPanel({ layout, pageIdx, itemId, setPageIdx, setItemId, u
           selectedId={itemId}
           orientation={orientation}
           onOrientation={onOrientation}
+          onEditGrid={() => { setItemId(null); setCell(null); window.setTimeout(() => { const el = document.getElementById("p-cols"); el?.scrollIntoView({ block: "center" }); el?.focus(); }, 80); }}
           onSelect={(pageId, id, c) => {
             switchPage(pageId);
             if (id) {

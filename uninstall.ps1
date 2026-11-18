@@ -1,28 +1,42 @@
-# PhoneDesk uninstaller for Windows (experimental).
+# Take PhoneDesk off a Windows PC: scheduled task, hooks, firewall rule, PATH entry and the program. Data stays unless purged.
 #
+# Usage
 #   irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.ps1 | iex
 #
-# Stops and removes the scheduled task, removes PhoneDesk's hooks from Claude Code and Codex (only the entries
-# PhoneDesk added; a backup <file>.phonedesk.bak is written first), removes the Windows Firewall rule PhoneDesk added
-# (one UAC prompt, only if the rule exists) and deletes the program. Your data in %USERPROFILE%\.phonedesk (layout,
-# paired phones, settings) is kept unless you set $env:PHONEDESK_PURGE=1.
+# What goes
+#   - the "PhoneDesk" scheduled task and any running agent
+#   - the hooks PhoneDesk added to Claude Code and Codex (only our entries; <file>.phonedesk.bak is written first)
+#   - the firewall rule PhoneDesk added (one UAC prompt, only if the rule exists)
+#   - the program folder and its PATH entry
+# What stays: %USERPROFILE%\.phonedesk (layout, paired phones, settings) - unless purged.
 #
-# Options (environment variables): PHONEDESK_PURGE=1 (also delete the data folder), PHONEDESK_YES=1 (do not ask),
-# PHONEDESK_DRY_RUN=1 (show what would be removed). Test knob: PHONEDESK_INSTALL_HOME (same as setup.ps1).
+#   Environment variable      Effect
+#   $env:PHONEDESK_PURGE=1    also delete the data folder
+#   $env:PHONEDESK_YES=1      ask nothing
+#   $env:PHONEDESK_DRY_RUN=1  list what would go, change nothing
+#
+# Test hook: PHONEDESK_INSTALL_HOME (same meaning as in setup.ps1).
 
 function Uninstall-PhoneDesk {
   [CmdletBinding()]
   param([switch]$Purge, [switch]$Yes, [switch]$DryRun)
   $ErrorActionPreference = 'Stop'
-  function Step($m) { Write-Host ''; Write-Host "==> $m" -ForegroundColor Cyan }
-  function Info($m) { Write-Host "    $m" }
-  function Ok($m) { Write-Host "    OK  $m" -ForegroundColor Green }
-  function Caution($m) { Write-Host "    !   $m" -ForegroundColor Yellow }
+  $repo = 'howznguyen/phonedesk'
+
+  $utf = $false
+  try { $utf = ([Console]::OutputEncoding.CodePage -eq 65001) } catch { }
+  $G = if ($utf) { @{ ok = [string][char]0x2713; warn = '!'; bad = [string][char]0x2717; arrow = [string][char]0x2192 } } else { @{ ok = 'ok'; warn = '!'; bad = 'x'; arrow = '->' } }
+  $useColor = -not $env:NO_COLOR
+  function Put([string]$text, [string]$color) { if ($useColor -and $color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text } }
+  function Say([string]$m) { Put "  $m" '' }
+  function Good([string]$m) { Put "  $($G.ok) $m" 'Green' }
+  function Warn([string]$m) { Put "  $($G.warn) $m" 'Yellow' }
+  function Stage([int]$n, [string]$title) { Write-Host ''; Put "[$n/4] $title" 'Cyan' }
   function Ask([string]$question, [bool]$default) {
     $hint = if ($default) { '[Y/n]' } else { '[y/N]' }
-    if ($Yes -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { Info "$question $hint -> $(if ($default) { 'yes' } else { 'no' }) (default)"; return $default }
+    if ($Yes -or -not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { Say "$question $hint $($G.arrow) $(if ($default) { 'yes' } else { 'no' }) (default)"; return $default }
     while ($true) {
-      $a = (Read-Host "    $question $hint").Trim()
+      $a = (Read-Host "  $question $hint").Trim()
       if ($a -eq '') { return $default }
       if ($a -match '^(y|yes)$') { return $true }
       if ($a -match '^(n|no)$') { return $false }
@@ -52,54 +66,65 @@ function Uninstall-PhoneDesk {
     try { $null = & $exe @arguments 2>&1; return $LASTEXITCODE } finally { $ErrorActionPreference = $ea; foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') } }
   }
 
-  Step 'PhoneDesk will remove'
-  Info "the scheduled task and the program ($exe)"
-  Info 'PhoneDesk hooks in Claude Code / Codex (a backup is written first)'
-  Info 'the Windows Firewall rule PhoneDesk added, if any (asks Windows for permission)'
-  if ($Purge) { Info "ALL your data in $dataDir (layout, paired phones, uploaded icons and sounds)" } else { Info "(your data in $dataDir is kept)" }
-  if ($DryRun) { Caution 'dry run: nothing was removed'; return }
-  if (-not (Ask 'Continue?' $true)) { Write-Host 'Cancelled; nothing was removed.'; return }
+  # ------------------------------------------------------------ the plan
+  Write-Host ''
+  Put '  PhoneDesk  uninstaller for Windows' 'Cyan'
+  Write-Host ''
+  Say 'This will remove:'
+  Say "  - the scheduled task and the program ($exe)"
+  Say '  - PhoneDesk hooks in Claude Code / Codex (a backup is written first)'
+  Say '  - the firewall rule PhoneDesk added, if any (Windows asks permission)'
+  Say '  - the PhoneDesk entry in your PATH'
+  if ($Purge) { Say "  - ALL your data in $dataDir (layout, paired phones, icons, sounds)" } else { Say "  Your data in $dataDir stays." }
+  if ($DryRun) { Warn 'dry run: nothing was removed'; return }
+  if (-not (Ask 'Continue?' $true)) { Say 'Cancelled. Nothing was removed.'; return }
 
-  Step 'Stopping and removing the service'
+  # ------------------------------------------------------------ 1 service and hooks
+  Stage 1 'Stopping PhoneDesk and removing hooks'
   if (Test-Path -LiteralPath $exe) {
     [void](Run-Bin @('service', 'uninstall'))
-    Ok 'scheduled task removed'
-    Step 'Removing hooks'
+    Good 'scheduled task removed'
     [void](Run-Bin @('hooks', 'remove'))
-    Ok 'hooks removed'
+    Good 'hooks removed'
   } else {
-    Caution "no program at $exe (already removed?)"
+    Warn "no program at $exe (already removed?)"
   }
   Get-Process -Name phonedesk -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Milliseconds 700
 
-  Step 'Firewall rule'
+  # ------------------------------------------------------------ 2 firewall
+  Stage 2 'Firewall rule'
   $rule = $false
   try { $rule = [bool](Get-NetFirewallApplicationFilter -Program $exe -ErrorAction SilentlyContinue | Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Direction -eq 'Inbound' }) } catch { }
   if ($rule) {
     try {
       $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', "netsh advfirewall firewall delete rule name=all program=`"$exe`"") -Verb RunAs -Wait -PassThru -WindowStyle Hidden
-      if ($p.ExitCode -eq 0) { Ok 'firewall rule removed' } else { Caution "netsh returned $($p.ExitCode); remove the rule named PhoneDesk in Windows Security > Firewall > Advanced settings" }
-    } catch { Caution 'the permission prompt was declined; the rule named PhoneDesk is still there (Windows Security > Firewall > Advanced settings)' }
+      if ($p.ExitCode -eq 0) { Good 'firewall rule removed' } else { Warn "netsh returned $($p.ExitCode); delete the rule named PhoneDesk in Windows Security > Firewall > Advanced settings" }
+    } catch { Warn 'the permission prompt was declined; the rule named PhoneDesk is still there (Windows Security > Firewall > Advanced settings)' }
   } else {
-    Info 'no PhoneDesk firewall rule found'
+    Say 'no PhoneDesk firewall rule found'
   }
 
-  Step 'Removing the program'
-  if (Test-Path -LiteralPath $binDir) { Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue; Ok "removed $binDir" }
+  # ------------------------------------------------------------ 3 files and PATH
+  Stage 3 'Deleting the program'
+  if (Test-Path -LiteralPath $binDir) { Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue; Good "removed $binDir" }
   if (-not $relocated) {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $parts = @($userPath -split ';' | Where-Object { $_ })
-    if ($parts -contains $binDir) { [Environment]::SetEnvironmentVariable('Path', (($parts | Where-Object { $_ -ne $binDir }) -join ';'), 'User'); Ok 'removed from your PATH' }
+    if ($parts -contains $binDir) { [Environment]::SetEnvironmentVariable('Path', (($parts | Where-Object { $_ -ne $binDir }) -join ';'), 'User'); Good 'removed from your PATH' }
     $parent = Split-Path $binDir -Parent
     if ((Test-Path -LiteralPath $parent) -and -not (Get-ChildItem -LiteralPath $parent -Force)) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue }
   }
+
+  # ------------------------------------------------------------ 4 data
+  Stage 4 'Your data'
   if ($Purge) {
-    if (Ask "Really delete $dataDir (this cannot be undone)?" $Yes.IsPresent) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue; Ok "deleted $dataDir" }
+    if (Ask "Really delete $dataDir? This cannot be undone." $Yes.IsPresent) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue; Good "deleted $dataDir" }
   } else {
-    Info "Your data is still in $dataDir. Delete that folder to remove everything."
+    Say "Still in $dataDir. Delete that folder to remove everything."
   }
-  Step 'Done'
+  Write-Host ''
+  Put "  $($G.ok) PhoneDesk is gone." 'Green'
 }
 
 if ($env:PHONEDESK_SETUP_NORUN -ne '1') {

@@ -1,6 +1,10 @@
 import type { Server, ServerWebSocket } from "bun";
 import { HOME, loadDevices, loadLayout, saveDevices, saveLayout, validateLayout, type Action, type Layout } from "./config";
 import { resolveAsset } from "./assets";
+
+/** Embedded text assets served gzipped when the client accepts it; compressed once and kept (they never change). */
+const COMPRESSIBLE = /^(text\/|application\/(javascript|json|manifest\+json)|image\/svg\+xml)/;
+const gzCache = new Map<string, Uint8Array>();
 import { isLocal, lanIp, localHostName } from "./net";
 import { Pairing, cookieToken, expiryFrom, tokenCookie, withDevicesLock } from "./pairing";
 import { SOUND_MAX, SOUND_TYPES, SoundLibrary, SoundPlayer, bareId, SOUND_ID_HEX, type SpawnFn } from "./sounds";
@@ -36,7 +40,17 @@ import { askHookCommand, hookCommand, hookConfigPath, installAskHook, installHoo
 import { AWAY_IDLE_SECONDS, AskSettingsStore, QUESTION_TIMEOUT_MS, QuestionBroker, parseQuestionInput, readIdleSeconds } from "./questions";
 import { parseProcessesRequest, topProcesses as realTopProcesses, type ProcessInfo, type ProcessSort } from "./processes";
 import { setLanguage, t } from "./i18n";
-import { describeRequest, realProbes, runDoctor, type DoctorReport, type Probes } from "./doctor";
+import { describeRequest, macIdentifier, realProbes, runDoctor, tccServiceFor, type DoctorReport, type Probes } from "./doctor";
+
+/** One mDNS query to 224.0.0.251:5353: enough for macOS to list this binary under Local Network and show its prompt. */
+async function touchLocalNetwork(): Promise<void> {
+  // DNS header (1 question) + "_services._dns-sd._udp.local" PTR IN
+  const q = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+  for (const label of ["_services", "_dns-sd", "_udp", "local"]) { q.push(label.length); for (const ch of label) q.push(ch.charCodeAt(0)); }
+  q.push(0, 0, 12, 0, 1);
+  const sock = await Bun.udpSocket({});
+  try { sock.send(new Uint8Array(q), 5353, "224.0.0.251"); } finally { setTimeout(() => sock.close(), 500); }
+}
 import { currentInstance } from "./service";
 import { platform } from "./platform";
 import pkg from "../package.json" with { type: "json" };
@@ -827,9 +841,19 @@ export async function startServer(opts: StartOptions = {}) {
         const what = describeRequest(String(body?.id ?? ""));
         if (!what) return json({ error: "this check cannot be requested" }, 400);
         const probes = doctorProbes();
+        // reset: clear a stale grant (an older build) so macOS asks again; only when the user pressed Reset
+        if (body?.reset === true && platform.id === "darwin" && !opts.doctorProbes) {
+          const svc = tccServiceFor(what.id);
+          const ident = svc ? macIdentifier() : null;
+          if (svc && ident) Bun.spawnSync(["tccutil", "reset", svc, ident], { stdout: "ignore", stderr: "ignore" });
+        }
         // shows macOS's own prompt for THIS process (the phonedesk binary under the LaunchAgent)
         if (what.kind === "accessibility") await probes.requestAccessibility();
-        else await probes.requestAutomation(what.bundle!);
+        else if (what.kind === "local-network") {
+          // macOS shows the Local Network prompt when this process first reaches the LAN: an mDNS query plus a Home Assistant test
+          if (!opts.doctorProbes) await touchLocalNetwork().catch(() => {});
+          await hassClient?.test().catch(() => null);
+        } else await probes.requestAutomation(what.bundle!);
         const item = (await doctorReport()).items.find((i) => i.id === what.id);
         return json({ ok: true, item });
       }
@@ -1048,15 +1072,28 @@ export async function startServer(opts: StartOptions = {}) {
             const bad = await guardPhone(server, req);
             if (bad) return bad;
           }
-          const file = Bun.file(asset.file.path);
-          return new Response(req.method === "HEAD" ? null : file, {
-            headers: { "content-type": asset.file.type, "cache-control": asset.cache },
-          });
+          const headers: Record<string, string> = { "content-type": asset.file.type, "cache-control": asset.cache };
+          // text assets go out gzipped (the deck JS is ~420 KB raw, ~130 KB gzipped: a big difference on an old phone)
+          if (COMPRESSIBLE.test(asset.file.type)) {
+            headers.vary = "accept-encoding";
+            if (/\bgzip\b/.test(req.headers.get("accept-encoding") ?? "")) {
+              let gz = gzCache.get(asset.file.path);
+              if (!gz) {
+                gz = Bun.gzipSync(new Uint8Array(await Bun.file(asset.file.path).arrayBuffer()));
+                gzCache.set(asset.file.path, gz);
+              }
+              headers["content-encoding"] = "gzip";
+              return new Response(req.method === "HEAD" ? null : (gz as unknown as BodyInit), { headers });
+            }
+          }
+          return new Response(req.method === "HEAD" ? null : Bun.file(asset.file.path), { headers });
         }
       }
       return json({ error: "not found" }, 404);
     }),
     websocket: {
+      // the layout message carries every icon (~200 KB of JSON); deflate shrinks it a lot on Wi-Fi to an old phone
+      perMessageDeflate: true,
       async open(ws) {
         if (!ws.data.deviceId) {
           ws.close(4401, "invalid token");

@@ -33,7 +33,7 @@ install on the phone and no account or cloud service.
 | **Everyday** | Now Playing with artwork and Resume, 6 clock styles and world clocks, weather (hourly and daily, °C or °F), a soundboard, notifications |
 | **Home Assistant** | Lights with colour, colour temperature, scenes and effects; climate (mode, fan, swing), fans, covers, vacuums, locks and sensors (optional) |
 | **Automation** | Webhooks that push values and notifications, rules that react to activity on the computer |
-| **Make it yours** | Drag-and-drop grid (8×3, 8×2, 5×3…), 4 tile styles (Soft, Solid, Outline, iOS), any colour per tile, 5,000+ icons, English or Vietnamese |
+| **Make it yours** | Drag-and-drop grid (8×4, 8×3, 5×3…) with a preview for every screen size, 4 tile styles (Soft, Solid, Outline, iOS), any colour per tile, 5,000+ icons, English or Vietnamese |
 
 The layout is a fixed grid of square tiles built in a drag-and-drop management page at `http://localhost:7420/manage/`.
 An MCP server lets an AI assistant arrange the layout for you. Runs on macOS, and on Windows 10/11 (experimental).
@@ -106,6 +106,20 @@ The phone remembers it, so you only do this once. For a full-screen panel, add i
 On the computer, open **http://localhost:7420/manage/** in your browser. Drag apps, shortcuts and widgets onto the
 phone preview, then press **Save**. The phone updates right away.
 
+- **Screen size:** pick your phone (iPhone 5s/SE, iPhone, Pro Max, Android, iPad or a custom size) above the preview to
+  see exactly what it will show. A warning appears when tiles get too small to tap.
+- **Theme:** mode, corner style, tile style, orientation and accent colour are picture cards, so you see the result
+  before you choose.
+- **Each tile:** pick its colour, fill style and size (1×1 up to 4×3) from small previews.
+
+<table>
+<tr><td colspan="2"><img src="docs/images/manage-screen-size.png" alt="The management page previewing the deck at iPhone 5s size, with the screen size picker"></td></tr>
+<tr>
+<td width="50%"><img src="docs/images/manage-theme.png" alt="Theme options as picture cards"></td>
+<td width="50%"><img src="docs/images/manage-tile.png" alt="Tile size and fill style pickers"></td>
+</tr>
+</table>
+
 The first time a key sends a shortcut, macOS asks for **Accessibility** permission: allow it (System Settings →
 Privacy & Security → Accessibility). Windows asks once to allow PhoneDesk on the network: allow it.
 
@@ -118,6 +132,8 @@ Privacy & Security → Accessibility). Windows asks once to allow PhoneDesk on t
 | The download is slow | It is about 20 MB (Windows 40 MB). Leave it running; the bar shows the progress. |
 | `phonedesk: command not found` | Open a **new** terminal window. |
 | A key does nothing on the Mac | Allow **Accessibility** for PhoneDesk, then run `phonedesk doctor` to see what else is missing. |
+| Keys stopped working after an update | macOS ties Accessibility to each build. In the management page, **Permissions** tab, press **Reset and ask again** (or run `phonedesk doctor --request accessibility --reset`) and turn phonedesk on. |
+| `.local` address does not open on an old phone | Use the IP address the installer printed, and give the computer a fixed IP in your router so it does not change. |
 | `port 7420 is in use` | Another program uses that port. Run the installer again with `--port 7421` (Mac: `… \| bash -s -- --port 7421`). |
 
 ### Update or remove

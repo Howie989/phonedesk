@@ -918,6 +918,8 @@ export function Deck(props: DeckProps) {
   boxRef.current = box
   const swiped = useRef(0)
   const touching = useRef(false)
+  const startIdx = useRef(-1)
+  const settleT = useRef(0)
   const lastScroll = useRef(0)
   const pendScroll = useRef(0)
   const vpRef = useRef(vp)
@@ -1214,7 +1216,7 @@ export function Deck(props: DeckProps) {
   useEffect(() => {
     const s = stripRef.current
     if (!s) return
-    const on = () => { touching.current = true; window.clearTimeout(pendScroll.current) }
+    const on = () => { touching.current = true; window.clearTimeout(pendScroll.current); if (startIdx.current < 0 || !settleT.current) startIdx.current = idxRef.current }
     const off = () => { touching.current = false }
     s.addEventListener('touchstart', on, { passive: true })
     s.addEventListener('touchend', off, { passive: true })
@@ -1237,7 +1239,8 @@ export function Deck(props: DeckProps) {
     let mode = 0 // 0 undecided, 1 swiping, -1 not a swipe
     let dx = 0
     const frame = (tt: Touch) => ({ x: tt.clientY, y: vpRef.current.w - tt.clientX })
-    const base = () => idxRef.current * s.clientWidth
+    let startI = 0 // page index when the finger went down: the drag and the verdict are relative to it (onScroll keeps moving idxRef mid-drag)
+    const base = () => startI * s.clientWidth
     const bounded = (v: number) => {
       const n = pagesRef.current.length
       const w = s.clientWidth
@@ -1253,6 +1256,7 @@ export function Deck(props: DeckProps) {
       if (tg && tg.closest && tg.closest('input, select, textarea, [data-noswipe]')) { mode = -1; return }
       const f = frame(e.touches[0])
       t0 = { x: f.x, y: f.y, t: Date.now(), id: e.touches[0].identifier }
+      startI = idxRef.current
       mode = 0
       dx = 0
     }
@@ -1283,7 +1287,7 @@ export function Deck(props: DeckProps) {
       if (was !== 1) return
       swiped.current = Date.now()
       const w = s.clientWidth
-      let i = idxRef.current
+      let i = startI
       if (dx < -40 || (dx < -15 && v < -0.4)) i = Math.min(pagesRef.current.length - 1, i + 1)
       else if (dx > 40 || (dx > 15 && v > 0.4)) i = Math.max(0, i - 1)
       if (i !== idxRef.current) goTo(i, true)
@@ -1394,8 +1398,24 @@ export function Deck(props: DeckProps) {
     }
   }, [rotated, st.status])
 
+  /** One swipe moves one page: when the strip settles more than a page from where the touch began (no scroll-snap-stop on iOS 12 / old Chrome), step back to start +/- 1. */
+  const settle = () => {
+    settleT.current = 0
+    const s = stripRef.current
+    if (!s || !s.clientWidth || touching.current) return
+    const st = startIdx.current
+    startIdx.current = -1
+    if (st < 0) return
+    const i = Math.round(s.scrollLeft / s.clientWidth)
+    if (Math.abs(i - st) > 1) {
+      const to = Math.max(0, Math.min(pagesRef.current.length - 1, st + (i > st ? 1 : -1)))
+      goTo(to, true)
+    }
+  }
   const onScroll = () => {
     lastScroll.current = Date.now()
+    window.clearTimeout(settleT.current)
+    settleT.current = window.setTimeout(settle, 150)
     cancelAnimationFrame(raf.current)
     raf.current = requestAnimationFrame(() => {
       const s = stripRef.current
@@ -1690,7 +1710,7 @@ export function Deck(props: DeckProps) {
   }
 
   return (
-    <div class={'pd-root' + (preview ? ' pd-root--preview' : '') + (rotated ? ' pd-root--rot' : '')} ref={rootRef} data-pd-theme="dark" style={rootStyle}>
+    <div class={'pd-root' + (preview ? ' pd-root--preview' : '') + (rotated ? ' pd-root--rot' : '') + (Math.min(vp.w, vp.h) <= 340 ? ' pd-root--sm' : '')} ref={rootRef} data-pd-theme="dark" style={rootStyle}>
       {st.reloading ? <div class="pd-veil">{t('Reloading…')}</div> : null}
       <div class={'pd-sheet' + (closing ? ' pd-sheet--closing' : '')}>
         <div class="pd-panel" role="dialog" aria-label="PhoneDesk">
@@ -1732,7 +1752,10 @@ export function Deck(props: DeckProps) {
                     <div class="pd-empty">{t('Waiting for layout...')}</div>
                   </div>
                 ) : null}
-                {pages.map((p) => {
+                {pages.map((p, pi) => {
+                  // only the page on screen and its neighbours get tiles: an old phone (iPhone 5s) chokes on building
+                  // and re-rendering every page each second; the far pages stay as empty slides so swiping still lines up
+                  if (!preview && Math.abs(pi - pageIdx) > 1) return <div class="pd-page" key={p.id} />
                   const cols = Math.max(1, p.columns | 0)
                   const rows = Math.max(1, (p.rows || 4) | 0)
                   const cell = cellSize(p, box)

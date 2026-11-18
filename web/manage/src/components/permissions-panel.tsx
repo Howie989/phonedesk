@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconRefresh as Refresh, IconSettings as Settings, IconShieldCheck as Shield } from "@tabler/icons-react";
+import { IconRefresh as Refresh, IconRotateClockwise2 as Reset, IconSettings as Settings, IconShieldCheck as Shield } from "@tabler/icons-react";
 import { Alert } from "@/components/ui/knowns/alert";
 import { Button } from "@/components/ui/knowns/button";
 import { Card, CardContent } from "@/components/ui/knowns/card";
@@ -34,7 +34,9 @@ const toneOf = (i: DoctorItem): StatusDotTone => (/signature|signing/i.test(i.id
 /** Rows that only exist on macOS: hidden when the agent runs on Windows. */
 const MAC_ONLY = new Set(["accessibility", "screen-recording", "automation", "input-monitoring"]);
 /** Checks the agent can ask macOS to prompt for. */
-const REQUESTABLE = new Set(["accessibility"]);
+const REQUESTABLE = new Set(["accessibility", "local-network"]);
+/** Checks whose stale grant (from an older PhoneDesk build) can be cleared so macOS asks again. */
+const RESETTABLE = new Set(["accessibility"]);
 
 export function PermissionsPanel({ items, missing, error, reload }: { items: DoctorItem[] | null; missing: boolean; error: string | null; reload: () => Promise<void> }) {
   useLanguage();
@@ -78,6 +80,8 @@ export function PermissionsPanel({ items, missing, error, reload }: { items: Doc
               {shown.map((i) => {
                 const name = NAMES[i.id] ? t(NAMES[i.id]!) : i.name ?? i.id;
                 const bad = i.status === "missing" || i.status === "denied";
+                // "unknown" Local Network (Home Assistant unreachable) still gets its Request button
+                const actionable = bad || (i.status === "unknown" && i.id === "local-network");
                 return (
                   <li key={i.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                     <StatusDot tone={toneOf(i)} pulse={false} label={stateLabel(i)} />
@@ -86,8 +90,9 @@ export function PermissionsPanel({ items, missing, error, reload }: { items: Doc
                       {i.detail && <p className="text-xs text-muted-foreground">{i.detail}</p>}
                       {bad && i.fix?.text && <p className="mt-0.5 text-xs">{i.fix.text}</p>}
                     </div>
-                    {bad && (
+                    {actionable && (
                       <div className="flex flex-none items-center gap-2">
+                        {!win && RESETTABLE.has(i.id) && <Button size="xs" variant="secondary" icon={<Reset />} loading={busy === `reset-${i.id}`} title={t("Clears the old entry (left by an earlier PhoneDesk version) and asks macOS again. Turn phonedesk on when the prompt appears.")} onClick={() => void act(`reset-${i.id}`, () => api.requestDoctor(i.id, true), t("The old entry was cleared and macOS was asked again."))}>{t("Reset and ask again")}</Button>}
                         {REQUESTABLE.has(i.id) && <Button size="xs" icon={<Shield />} loading={busy === `req-${i.id}`} onClick={() => void act(`req-${i.id}`, () => api.requestDoctor(i.id), t("macOS was asked to show its permission prompt."))}>{t("Request")}</Button>}
                         {(i.fix?.settingsUrl || !REQUESTABLE.has(i.id)) && <Button size="xs" variant="secondary" icon={<Settings />} loading={busy === `open-${i.id}`} onClick={() => void act(`open-${i.id}`, () => api.openDoctorSettings(i.id))}>{win ? t("Open Windows Settings") : t("Open Settings")}</Button>}
                       </div>

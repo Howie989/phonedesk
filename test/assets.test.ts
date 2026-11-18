@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { generate, contentType, buildHash } = await import("../scripts/gen-assets");
+const { generate, contentType, buildHash, deckBuildId } = await import("../scripts/gen-assets");
 const { resolveAsset } = await import("../src/assets");
 
 describe("gen-assets", () => {
@@ -54,7 +54,18 @@ describe("gen-assets", () => {
     writeFileSync(join(root, "web/deck/dist/index.html"), "<html>");
     const out = join(root, "src", "assets.gen.ts");
     generate(join(root, "web"), out);
-    expect(readFileSync(out, "utf8")).toContain(`export const DECK_BUILD = "${buildHash(join(root, "web/deck/dist"))}";`);
+    expect(readFileSync(out, "utf8")).toContain(`export const DECK_BUILD = "${deckBuildId(join(root, "web/deck/dist"))}";`);
+  });
+
+  test("DECK_BUILD is the id the deck page carries (build.json), so hello never forces a reload", () => {
+    const root = mkdtempSync(join(tmpdir(), "pd-gen-"));
+    mkdirSync(join(root, "src"));
+    mkdirSync(join(root, "web/deck/dist"), { recursive: true });
+    writeFileSync(join(root, "web/deck/dist/index.html"), "<html><head><meta name=\"pd-build\" content=\"abc123def456\">");
+    writeFileSync(join(root, "web/deck/dist/build.json"), JSON.stringify({ build: "abc123def456", files: [] }));
+    const out = join(root, "src", "assets.gen.ts");
+    generate(join(root, "web"), out);
+    expect(readFileSync(out, "utf8")).toContain(`export const DECK_BUILD = "abc123def456";`);
   });
 
   test("contentType", () => {

@@ -242,14 +242,36 @@ export async function runDoctor(p: Probes, ctx: DoctorCtx): Promise<DoctorReport
 }
 
 /** Which ids `request()` can ask macOS for. */
-export const REQUESTABLE = ["accessibility", ...AUTOMATION_TARGETS.map((x) => x.id)] as const;
+export const REQUESTABLE = ["accessibility", "local-network", ...AUTOMATION_TARGETS.map((x) => x.id)] as const;
+
+/**
+ * Code-signing identifier of the running binary (ad hoc: "<file name>-<hash>", the same for every build with that file
+ * name, so Local Network grants survive updates). tccutil resets by it; null when it cannot be read.
+ */
+export function macIdentifier(exe: string = process.execPath): string | null {
+  if (osPlatform.id !== "darwin") return null;
+  const p = Bun.spawnSync(["codesign", "-dv", exe], { stdout: "pipe", stderr: "pipe" });
+  const m = /^Identifier=(.+)$/m.exec(p.stderr.toString() + p.stdout.toString());
+  return m ? m[1]!.trim() : null;
+}
+
+/**
+ * tccutil service to clear before asking again (a grant left over from an older build stops the prompt from showing).
+ * Local Network has no tccutil service: macOS only re-asks when the process reaches the local network.
+ */
+export function tccServiceFor(id: string): string | null {
+  if (id === "accessibility") return "Accessibility";
+  if (AUTOMATION_TARGETS.some((x) => x.id === id)) return "AppleEvents";
+  return null;
+}
 
 /**
  * Asks macOS to show its permission prompt for `id`, so it lists the binary. Only runs when the user asked
  * (`phonedesk doctor --request <id>` / POST /api/doctor/request). Returns the state right after the call.
  */
-export function describeRequest(id: string): { id: string; kind: "accessibility" | "automation"; bundle?: string } | null {
+export function describeRequest(id: string): { id: string; kind: "accessibility" | "automation" | "local-network"; bundle?: string } | null {
   if (id === "accessibility") return { id, kind: "accessibility" };
+  if (id === "local-network") return { id, kind: "local-network" };
   const tg = AUTOMATION_TARGETS.find((x) => x.id === id);
   return tg ? { id, kind: "automation", bundle: tg.bundle } : null;
 }

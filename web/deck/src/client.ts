@@ -57,12 +57,16 @@ const DECK_BUILD: string = (() => {
   }
 })()
 const K_RELOAD = 'pd.reloadAt'
-/** One automatic reload per 2 minutes, so a build mismatch that a reload cannot fix never loops. */
+/**
+ * One automatic reload per 2 minutes, so a build mismatch that a reload cannot fix never loops.
+ * localStorage, not sessionStorage: a home-screen web app on old iOS can start a fresh session on every reload,
+ * which turned the guard off and looped the page on "Reloading".
+ */
 function reloadAllowed(): boolean {
   try {
-    const last = Number(window.sessionStorage.getItem(K_RELOAD) || 0)
-    if (last && Date.now() - last < 120000) return false
-    window.sessionStorage.setItem(K_RELOAD, String(Date.now()))
+    const last = Number(window.localStorage.getItem(K_RELOAD) || 0)
+    if (last && Date.now() - last < 120000 && last <= Date.now()) return false
+    window.localStorage.setItem(K_RELOAD, String(Date.now()))
   } catch (e) {
     return false
   }

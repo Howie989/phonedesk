@@ -1,480 +1,543 @@
 #!/usr/bin/env bash
-# PhoneDesk installer for macOS: downloads the latest release, checks it, installs it and starts it.
+# PhoneDesk for macOS: one command to fetch, verify, install and start it.
 #
+# Usage
 #   curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.sh | bash -s -- --no-autostart
+#   curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.sh | bash -s -- --port 7421 --no-autostart
 #
-# Run it as yourself, not with sudo: nothing here needs administrator rights.
-# Running it again updates PhoneDesk; your layout, paired phones and settings in ~/.phonedesk are kept.
+# Needs no sudo (it refuses to run as root). Run it again any time to upgrade; ~/.phonedesk is never wiped.
 #
-# Options:
-#   --yes               answer every question with its default (unattended)
-#   --version <x.y.z>   install this release instead of the latest
-#   --port <n>          the port the agent listens on (default 7420)
-#   --no-autostart      do not start PhoneDesk at login (no launchd service)
-#   --no-start          install only; do not start the agent
-#   --no-open           do not open the management page in the browser
-#   --force             reinstall even when this version is already installed and intact
-#   --no-path           do not put `phonedesk` on your PATH (default: a symlink in ~/.local/bin when that is on PATH,
-#                       else one marked line in ~/.zshrc / ~/.bash_profile)
-#   --dry-run           download and verify, show what would happen, change nothing
-#   -h, --help          this text
+# Flags                 Effect                                                   Env twin
+#   -y, --yes           take every default, ask nothing
+#       --version X.Y.Z install that release, not the newest                     PHONEDESK_VERSION
+#       --force         reinstall even if this release is already in place       PHONEDESK_FORCE=1
+#       --port N        port for the agent (default 7420)
+#       --no-autostart  skip the launchd login service
+#       --no-start      place the program only, do not launch it
+#       --no-open       do not open the manage page afterwards
+#       --no-path       leave PATH alone (default: ~/.local/bin symlink, else one
+#                       marked line in ~/.zshrc / ~/.bash_profile)
+#       --dry-run       fetch and verify, say what would change, change nothing
+#   -h, --help          show this text
 #
-# Test knobs (not for normal use):
-#   PHONEDESK_GITHUB_URL / PHONEDESK_API_URL   where the "latest release" lookup goes (a local server in tests); PHONEDESK_RETRY_SECONDS scales the pause
-#   PHONEDESK_RELEASE_BASE   a directory or URL that holds phonedesk-darwin-<arch> and SHA256SUMS
-#   PHONEDESK_INSTALL_HOME   install under this directory instead of $HOME
+# Test hooks (not for everyday use)
+#   PHONEDESK_RELEASE_BASE   folder or URL holding phonedesk-darwin-<arch> and SHA256SUMS
+#   PHONEDESK_INSTALL_HOME   install below this directory instead of $HOME
+#   PHONEDESK_GITHUB_URL / PHONEDESK_API_URL   point the "newest release" lookup at a local server
+#   PHONEDESK_RETRY_SECONDS  scales the pause between lookup rounds
 set -euo pipefail
 
-repo="howznguyen/phonedesk"
-yes=0; version="${PHONEDESK_VERSION:-}"; version="${version#v}"; port=7420; autostart=1; start=1; open_page=1; dry=0; add_path=1; force=0; [ "${PHONEDESK_FORCE:-}" = 1 ] && force=1
+REPO="howznguyen/phonedesk"
+STAGES=6
+yes=0; version="${PHONEDESK_VERSION:-}"; version="${version#v}"; port=7420
+autostart=1; start=1; open_page=1; dry=0; add_path=1; force=0
+if [ "${PHONEDESK_FORCE:-}" = 1 ]; then force=1; fi
 tmp=""
 
-if [ -t 1 ]; then c_step=$'\033[36m'; c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_off=$'\033[0m'
-else c_step=""; c_ok=""; c_warn=""; c_err=""; c_off=""; fi
-step() { printf '\n%s==> %s%s\n' "$c_step" "$1" "$c_off"; }
-info() { printf '    %s\n' "$1"; }
-ok() { printf '    %sOK  %s%s\n' "$c_ok" "$1" "$c_off"; }
-caution() { printf '    %s!   %s%s\n' "$c_warn" "$1" "$c_off"; }
-die() {
-  printf '\n%sSetup stopped: %s%s\n' "$c_err" "$1" "$c_off" >&2
-  printf '%sHelp: https://github.com/%s#quick-start  -  issues: https://github.com/%s/issues%s\n' "$c_err" "$repo" "$repo" "$c_off" >&2
+# ---------------------------------------------------------------- terminal look
+# Brand cyan #22d3ee: truecolor when the terminal says so, else the nearest 256-colour (45). NO_COLOR and pipes get plain text.
+C_BRAND=""; C_BOLD=""; C_DIM=""; C_GOOD=""; C_WARN=""; C_BAD=""; C_OFF=""
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  case "${COLORTERM:-}" in
+    truecolor|24bit) C_BRAND=$'\033[38;2;34;211;238m' ;;
+    *) C_BRAND=$'\033[38;5;45m' ;;
+  esac
+  C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_GOOD=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
+fi
+G_OK="✓"; G_WARN="!"; G_BAD="✗"; G_ARROW="→"
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in C|POSIX) G_OK="ok"; G_WARN="!"; G_BAD="x"; G_ARROW="->" ;; esac
+
+say()   { printf '  %s\n' "$*"; }
+good()  { printf '  %s%s%s %s\n' "$C_GOOD" "$G_OK" "$C_OFF" "$*"; }
+warn()  { printf '  %s%s%s %s\n' "$C_WARN" "$G_WARN" "$C_OFF" "$*"; }
+stage() { printf '\n%s[%s/%s]%s %s%s%s\n' "$C_BRAND" "$1" "$STAGES" "$C_OFF" "$C_BOLD" "$2" "$C_OFF"; }
+fail() { # fail "what failed" ["why / what to try"]
+  printf '\n%s%s %s%s\n' "$C_BAD" "$G_BAD" "$1" "$C_OFF" >&2
+  if [ -n "${2:-}" ]; then printf '  %s\n' "$2" >&2; fi
+  printf '\n  Need help? https://github.com/%s/issues\n' "$REPO" >&2
   exit 1
+}
+banner() {
+  printf '\n%s  ╭──────╮%s\n%s  │ ◉  ▭ │%s  %sPhoneDesk%s\n%s  ╰──────╯%s  %sinstaller for macOS%s\n' \
+    "$C_BRAND" "$C_OFF" "$C_BRAND" "$C_OFF" "$C_BOLD" "$C_OFF" "$C_BRAND" "$C_OFF" "$C_DIM" "$C_OFF"
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 cleanup() { if [ -n "$tmp" ] && [ -d "$tmp" ]; then rm -rf "$tmp"; fi; }
 trap cleanup EXIT
-
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
+# ---------------------------------------------------------------- flags
 while [ $# -gt 0 ]; do
   case "$1" in
-    --yes|-y) yes=1 ;;
+    -y|--yes) yes=1 ;;
     --dry-run) dry=1 ;;
     --no-autostart) autostart=0 ;;
     --no-start) start=0 ;;
     --no-open) open_page=0 ;;
     --no-path) add_path=0 ;;
     --force) force=1 ;;
-    --version) shift; [ $# -gt 0 ] || die "--version needs a value"; version="${1#v}" ;;
+    --version) shift; [ $# -gt 0 ] || fail "--version needs a value" "Example: --version 0.1.1"; version="${1#v}" ;;
     --version=*) version="${1#--version=}"; version="${version#v}" ;;
-    --port) shift; [ $# -gt 0 ] || die "--port needs a value"; port="$1" ;;
+    --port) shift; [ $# -gt 0 ] || fail "--port needs a value" "Example: --port 7421"; port="$1" ;;
     --port=*) port="${1#--port=}" ;;
     -h|--help) usage; exit 0 ;;
-    *) die "unknown option: $1 (see --help)" ;;
+    *) fail "unrecognised flag: $1" "Run with --help to see the flags." ;;
   esac
   shift
 done
+case "$port" in ''|*[!0-9]*) fail "--port must be a number" ;; esac
+if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then fail "--port must be between 1 and 65535"; fi
+if [ "$(id -u)" = 0 ] && [ -z "${PHONEDESK_INSTALL_HOME:-}" ]; then fail "refusing to run as root" "Run it as your own user, without sudo."; fi
 
-case "$port" in ''|*[!0-9]*) die "--port must be a number" ;; esac
-if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then die "--port must be between 1 and 65535"; fi
-if [ "$(id -u)" = 0 ] && [ -z "${PHONEDESK_INSTALL_HOME:-}" ]; then die "do not run this with sudo; run it as your own user"; fi
-
-# Questions go to the terminal even when the script itself arrives through a pipe (curl ... | bash).
+# Prompts read from /dev/tty, so they still work when this file is piped in by curl.
 tty_ok=0
 if (: </dev/tty) 2>/dev/null; then tty_ok=1; fi
 
-ask() { # ask "question" y|n -> 0 for yes
-  local question="$1" default="$2" hint answer
-  if [ "$default" = y ]; then hint="[Y/n]"; else hint="[y/N]"; fi
+ask() { # ask "question" y|n  -> status 0 for yes
+  local q="$1" def="$2" hint reply
+  if [ "$def" = y ]; then hint="[Y/n]"; else hint="[y/N]"; fi
   if [ "$yes" = 1 ] || [ "$tty_ok" = 0 ]; then
-    if [ "$default" = y ]; then info "$question $hint -> yes (default)"; return 0; fi
-    info "$question $hint -> no (default)"; return 1
+    if [ "$def" = y ]; then say "$q $hint $G_ARROW yes (default)"; return 0; fi
+    say "$q $hint $G_ARROW no (default)"; return 1
   fi
   while :; do
-    printf '    %s %s ' "$question" "$hint" >/dev/tty
-    IFS= read -r answer </dev/tty || answer=""
-    case "$answer" in
-      "") if [ "$default" = y ]; then return 0; else return 1; fi ;;
+    printf '  %s %s ' "$q" "$hint" >/dev/tty
+    IFS= read -r reply </dev/tty || reply=""
+    case "$reply" in
+      "") if [ "$def" = y ]; then return 0; else return 1; fi ;;
       [Yy]|[Yy][Ee][Ss]) return 0 ;;
       [Nn]|[Nn][Oo]) return 1 ;;
     esac
   done
 }
 
-sha256_of() {
-  if have shasum; then shasum -a 256 "$1" | cut -d' ' -f1
-  elif have sha256sum; then sha256sum "$1" | cut -d' ' -f1
-  else die "neither shasum nor sha256sum is available to check the download"; fi
+# ---------------------------------------------------------------- hashing and downloading
+hash_file() {
+  if have shasum; then shasum -a 256 "$1" | cut -d' ' -f1 | tr 'A-F' 'a-f'
+  elif have sha256sum; then sha256sum "$1" | cut -d' ' -f1 | tr 'A-F' 'a-f'
+  else fail "cannot check the download" "Neither shasum nor sha256sum is installed."; fi
 }
-
-check_sum() { # check_sum file sums-file
-  local name expected actual
+sum_for() { # sum_for NAME SUMS-FILE -> lowercase sha256 listed for NAME (empty if absent)
+  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print tolower($1); exit } }' "$2"
+}
+sum_listed() { [ -n "$(sum_for "$1" "$2")" ]; }
+sum_check() { # sum_check FILE SUMS-FILE
+  local name want got
   name="$(basename "$1")"
-  expected="$(awk -v n="$name" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print tolower($1); exit } }' "$2")"
-  [ -n "$expected" ] || die "$name is not listed in SHA256SUMS; refusing to install it"
-  actual="$(sha256_of "$1" | tr 'A-F' 'a-f')"
-  [ "$actual" = "$expected" ] || die "$name does not match its SHA256SUMS entry (expected $expected, got $actual). Nothing was installed."
-  ok "$name matches SHA256SUMS ($actual)"
+  want="$(sum_for "$name" "$2")"
+  [ -n "$want" ] || fail "$name has no entry in SHA256SUMS" "Refusing to install a file that cannot be verified."
+  got="$(hash_file "$1")"
+  [ "$got" = "$want" ] || fail "checksum mismatch for $name" "Expected $want but got $got. Nothing was installed."
+  good "$name checksum ok ${C_DIM}(${got:0:16}…)${C_OFF}"
 }
 
-# fetch <url-or-path> <file>: https downloads only, except an explicit test base
 base_is_custom=0
-fetch() {
+http_get() { # http_get URL-OR-PATH DEST   (https only, unless the base was set by a test hook)
   local src="$1" dest="$2"
   case "$src" in
     http://*|https://*)
-      have curl || die "curl is required"
-      if [ "$base_is_custom" = 1 ]; then curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=http,https' -A phonedesk-setup -o "$dest" "$src" || return 1
-      else curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --proto-redir '=https' -A phonedesk-setup -o "$dest" "$src" || return 1; fi ;;
+      have curl || fail "curl is missing" "It ships with macOS; check your PATH."
+      if [ "$base_is_custom" = 1 ]; then
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=http,https' -A phonedesk-setup -o "$dest" "$src" || return 1
+      else
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --proto-redir '=https' -A phonedesk-setup -o "$dest" "$src" || return 1
+      fi ;;
     *) [ -f "$src" ] || return 1; cp "$src" "$dest" ;;
   esac
 }
 
-listed() { # listed name sums-file
-  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) found = 1 } END { exit !found }' "$2"
-}
-
-# " (63 MB)" for a URL or a file, or nothing when the size is unknown
-size_note() {
+size_hint() { # " (63 MB)" for a URL or file; nothing when unknown
   local src="$1" bytes=""
   case "$src" in
-    http://*|https://*) have curl && bytes="$(curl -fsSLI --max-time 15 -A phonedesk-setup "$src" 2>/dev/null | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')" ;;
-    *) [ -f "$src" ] && bytes="$(wc -c <"$src" | tr -d ' ')" ;;
+    http://*|https://*) if have curl; then bytes="$(curl -fsSLI --max-time 15 -A phonedesk-setup "$src" 2>/dev/null | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')"; fi ;;
+    *) if [ -f "$src" ]; then bytes="$(wc -c <"$src" | tr -d ' ')"; fi ;;
   esac
   case "$bytes" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$bytes" -gt 0 ] || return 0
-  printf ' (%s MB)' "$(( (bytes + 1048575) / 1048576 ))"
+  if [ "$bytes" -gt 0 ]; then printf ' (%s MB)' "$(( (bytes + 1048575) / 1048576 ))"; fi
+  return 0
 }
 
-# fetch_big <url-or-path> <file>: a large download. Shows a progress bar on a terminal; when no bytes arrive for 60 s it
-# gives up on that attempt and continues from where it stopped (up to 5 times).
-fetch_big() {
-  local src="$1" dest="$2" i=0 quiet=-sS proto code
+# Big files: a progress bar on a terminal; if nothing arrives for 60 s the attempt is dropped and resumed (5 tries).
+http_get_big() { # http_get_big URL-OR-PATH DEST
+  local src="$1" dest="$2" tries=0 bar=-sS proto rc stall="${PHONEDESK_STALL_SECONDS:-60}"
   case "$src" in
     http://*|https://*) ;;
-    *) fetch "$src" "$dest"; return ;;
+    *) http_get "$src" "$dest"; return ;;
   esac
-  have curl || die "curl is required"
-  if [ -t 2 ]; then quiet=--progress-bar; fi
+  have curl || fail "curl is missing" "It ships with macOS; check your PATH."
+  if [ -t 2 ]; then bar=--progress-bar; fi
   if [ "$base_is_custom" = 1 ]; then proto=(--proto '=http,https'); else proto=(--proto '=https' --proto-redir '=https'); fi
-  while [ "$i" -lt 5 ]; do
-    code=0
-    curl -fL "$quiet" "${proto[@]}" -A phonedesk-setup --retry 3 --retry-delay 2 --speed-limit 1024 --speed-time "${PHONEDESK_STALL_SECONDS:-60}" -C - -o "$dest" "$src" || code=$?
-    [ "$code" = 0 ] && return 0
-    i=$((i + 1))
-    if [ "$code" = 28 ]; then caution "no data for ${PHONEDESK_STALL_SECONDS:-60} s (a slow or blocked connection to GitHub); continuing where it stopped ($i/5)";
-    else caution "the download was interrupted (curl exit $code); continuing where it stopped ($i/5)"; fi
-    [ "$code" = 22 ] && return 1 # an HTTP error (404 ...): retrying the same URL will not help
+  while [ "$tries" -lt 5 ]; do
+    rc=0
+    curl -fL "$bar" "${proto[@]}" -A phonedesk-setup --retry 3 --retry-delay 2 --speed-limit 1024 --speed-time "$stall" -C - -o "$dest" "$src" || rc=$?
+    if [ "$rc" = 0 ]; then return 0; fi
+    tries=$((tries + 1))
+    if [ "$rc" = 28 ]; then warn "no data for ${stall} s (slow or blocked route to GitHub); resuming from where it stopped ($tries/5)"
+    else warn "transfer interrupted (curl exit $rc); resuming from where it stopped ($tries/5)"; fi
+    if [ "$rc" = 22 ]; then return 1; fi # an HTTP error such as 404: the same URL will not improve
     sleep 2
   done
-  info "Hint: the download is large. Try again later, a different network or a VPN, or download $src yourself and run with PHONEDESK_RELEASE_BASE=<folder>."
+  say "Tip: try later, another network or a VPN, or fetch $src by hand and point PHONEDESK_RELEASE_BASE at that folder."
   return 1
 }
 
-# ---------- where things go ----------
+# ---------------------------------------------------------------- where everything lives
 home_dir="${PHONEDESK_INSTALL_HOME:-$HOME}"
 data_dir="$home_dir/.phonedesk"
 bin_dir="$data_dir/bin"
 bin="$bin_dir/phonedesk"
 log_dir="$data_dir/logs"
 pidfile="$data_dir/agent.pid"
-# with a relocated install (tests), keep every file the binary touches inside it
+agents_dir="${PHONEDESK_LAUNCH_AGENTS_DIR:-$home_dir/Library/LaunchAgents}"
+plist="$agents_dir/dev.phonedesk.agent.plist"
+marker="$bin_dir/.release"
+# A relocated install (tests) keeps every file the program touches inside it.
 child_env=(PHONEDESK_HOME="$data_dir")
 if [ -n "${PHONEDESK_INSTALL_HOME:-}" ]; then
-  child_env+=(PHONEDESK_LAUNCH_AGENTS_DIR="${PHONEDESK_LAUNCH_AGENTS_DIR:-$home_dir/Library/LaunchAgents}" PHONEDESK_CLAUDE_DIR="${PHONEDESK_CLAUDE_DIR:-$home_dir/.claude}" PHONEDESK_CODEX_DIR="${PHONEDESK_CODEX_DIR:-$home_dir/.codex}")
+  child_env+=(PHONEDESK_LAUNCH_AGENTS_DIR="$agents_dir" PHONEDESK_CLAUDE_DIR="${PHONEDESK_CLAUDE_DIR:-$home_dir/.claude}" PHONEDESK_CODEX_DIR="${PHONEDESK_CODEX_DIR:-$home_dir/.codex}")
 fi
-agents_dir="${PHONEDESK_LAUNCH_AGENTS_DIR:-$home_dir/Library/LaunchAgents}"
 run_bin() { env "${child_env[@]}" "$@"; }
 
-# ---------- helpers: PATH and port ----------
-PATH_MARK='# phonedesk'
-path_line='export PATH="$HOME/.phonedesk/bin:$PATH" # phonedesk'
-path_how=""      # what we did, for the final output: symlink | rc
-path_state=""    # installed | already
-path_rc_files="" # the rc files we touched or found already set up
+# state carried between phases
+asset=""; base=""; tag=""; new_version=""; old_version=""; raw_sha=""
+up_to_date=0; already_running=0; svc_before=0
+bin_state="already set"; path_state="skipped"; svc_state="skipped"; path_how=""; path_rc_files=""
 
-# Makes `phonedesk` available: a symlink in ~/.local/bin when that directory is on PATH, else the marked export line in
-# ~/.zshrc and ~/.bash_profile (whichever of them exists; the one for $SHELL is created when neither does). Idempotent.
-add_to_path() {
-  local local_bin="$home_dir/.local/bin" target f shell_name
+ver_of() { printf '%s' "$1" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p'; }
+
+# What the agent on a port says about itself ("phonedesk 0.1.1 (abc1234)"), empty when silent.
+agent_line() {
+  local j v c d
+  j="$(curl -fsS --max-time 2 "http://127.0.0.1:$1/api/about" 2>/dev/null)" || return 0
+  v="$(printf '%s' "$j" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  c="$(printf '%s' "$j" | sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  d="$(printf '%s' "$j" | sed -n 's/.*"dirty"[[:space:]]*:[[:space:]]*\(true\).*/-dirty/p')"
+  [ -n "$v" ] || return 0
+  if [ -n "$c" ]; then printf 'phonedesk %s (%s%s)' "$v" "$c" "$d"; else printf 'phonedesk %s' "$v"; fi
+}
+
+# Who listens on a TCP port: "pid<TAB>command", empty when free (or lsof is missing).
+port_owner() {
+  local pid
+  have lsof || return 0
+  pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -n 1)"
+  [ -n "$pid" ] || return 0
+  printf '%s\t%s\n' "$pid" "$(ps -p "$pid" -o command= 2>/dev/null | cut -c1-120)"
+}
+
+# ================================================================ phase 1: detect_platform
+detect_platform() {
+  stage 1 "Checking this Mac"
+  [ "$(uname -s)" = Darwin ] || fail "this installer is macOS-only for now" "You are on $(uname -s)."
+  local arch want
+  arch="$(uname -m)"
+  case "$arch" in
+    arm64) want=arm64 ;;
+    x86_64)
+      want=x64
+      # a shell under Rosetta on Apple silicon still wants the native build
+      if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then want=arm64; fi ;;
+    *) fail "unsupported processor: $arch" ;;
+  esac
+  asset="phonedesk-darwin-$want"
+  good "macOS on $arch ${C_DIM}→ $asset${C_OFF}"
+}
+
+# ================================================================ phase 2: resolve_release
+latest_tag() { # prints the newest release tag; retries the redirect, then the API; fails with what went wrong
+  local gh="${PHONEDESK_GITHUB_URL:-https://github.com}" api="${PHONEDESK_API_URL:-https://api.github.com}"
+  local gap="${PHONEDESK_RETRY_SECONDS:-2}" t="" why="" round scheme
+  gh="${gh%/}"; api="${api%/}"
+  scheme=(--proto '=https' --proto-redir '=https')
+  if [ -n "${PHONEDESK_GITHUB_URL:-}${PHONEDESK_API_URL:-}" ]; then scheme=(--proto '=http,https'); fi
+  for round in 1 2 3 4; do
+    t="$(curl -fsSLI --retry 2 --retry-delay "$gap" --connect-timeout 15 "${scheme[@]}" -o /dev/null -w '%{url_effective}' "$gh/$REPO/releases/latest" 2>"$tmp/lookup.err" | sed -n 's#.*/tag/##p')" || t=""
+    if [ -n "$t" ]; then printf '%s' "$t"; return 0; fi
+    t="$(curl -fsSL --retry 2 --retry-delay "$gap" --connect-timeout 15 "${scheme[@]}" -H 'Accept: application/vnd.github+json' "$api/repos/$REPO/releases/latest" 2>>"$tmp/lookup.err" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || t=""
+    if [ -n "$t" ]; then printf '%s' "$t"; return 0; fi
+    why="$(tr '\n' ' ' <"$tmp/lookup.err" | sed 's/  */ /g')"
+    if [ "$round" -lt 4 ]; then warn "GitHub did not answer (${why:-no response}); retrying…" >&2; sleep $((round * gap)); fi
+  done
+  printf '%s' "$why" >"$tmp/lookup.why"
+  return 1
+}
+
+resolve_release() {
+  stage 2 "Finding the release"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/phonedesk-setup.XXXXXX")"
+  if [ -n "${PHONEDESK_RELEASE_BASE:-}" ]; then
+    base="${PHONEDESK_RELEASE_BASE%/}"; base_is_custom=1
+    good "using PHONEDESK_RELEASE_BASE ${C_DIM}($base)${C_OFF}"
+    return 0
+  fi
+  local gh="${PHONEDESK_GITHUB_URL:-https://github.com}"
+  gh="${gh%/}"
+  if [ -n "${PHONEDESK_GITHUB_URL:-}" ]; then base_is_custom=1; fi
+  if [ -n "$version" ]; then
+    tag="v$version"
+  else
+    have curl || fail "curl is missing" "It ships with macOS; check your PATH."
+    # GitHub answers 5xx now and then; latest_tag retries and falls back to the API.
+    tag="$(latest_tag)" || fail "couldn't look up the latest release of $REPO" "$(cat "$tmp/lookup.why" 2>/dev/null) - check your connection and run it again, or pin a release with --version 0.1.1 (or PHONEDESK_VERSION=0.1.1)."
+  fi
+  base="$gh/$REPO/releases/download/$tag"
+  good "using release $tag"
+}
+
+# ================================================================ phase 3: fetch_binary
+# A previous install leaves $marker holding the sha256 of the release file it came from and of the file on disk (the latter
+# differs because it is re-signed locally). Same release sum + untouched file + it still runs = nothing to download.
+probe_installed() {
+  local want rel_raw rel_inst
+  old_version=""
+  if [ -x "$bin" ]; then old_version="$(run_bin "$bin" --version 2>/dev/null | head -n1 || true)"; fi
+  want="$(sum_for "$asset" "$tmp/SHA256SUMS")"
+  up_to_date=0
+  if [ "$force" = 0 ] && [ -n "$old_version" ] && [ -n "$want" ] && [ -f "$marker" ]; then
+    rel_raw="$(sed -n 's/^raw=\([0-9a-f]*\).*/\1/p' "$marker")"
+    rel_inst="$(sed -n 's/.* installed=\([0-9a-f]*\).*/\1/p' "$marker")"
+    if [ "$rel_raw" = "$want" ] && [ -n "$rel_inst" ] && [ "$(hash_file "$bin")" = "$rel_inst" ]; then up_to_date=1; fi
+  fi
+  return 0
+}
+
+fetch_binary() {
+  stage 3 "Getting the program"
+  http_get "$base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "could not fetch $base/SHA256SUMS" "Check the release exists and that you are online."
+  probe_installed
+  if [ "$up_to_date" = 1 ]; then
+    new_version="$old_version"
+    good "PhoneDesk $(ver_of "$old_version") is up to date ${C_DIM}(checksum verified), skipping the download${C_OFF}"
+    return 0
+  fi
+  # Releases carry a gzip of each binary (about a third of the size); older ones only the plain file.
+  local got=0
+  if sum_listed "$asset.gz" "$tmp/SHA256SUMS"; then
+    say "Fetching $asset.gz$(size_hint "$base/$asset.gz")"
+    if http_get_big "$base/$asset.gz" "$tmp/$asset.gz"; then
+      sum_check "$tmp/$asset.gz" "$tmp/SHA256SUMS"
+      have gzip || fail "gzip is missing" "It is needed to unpack the download."
+      gzip -dc "$tmp/$asset.gz" >"$tmp/$asset" || fail "could not unpack $asset.gz"
+      rm -f "$tmp/$asset.gz"
+      got=1
+    else
+      warn "the compressed download failed; falling back to the uncompressed binary"
+      rm -f "$tmp/$asset.gz"
+    fi
+  fi
+  if [ "$got" = 0 ]; then
+    say "Fetching $asset$(size_hint "$base/$asset")"
+    http_get_big "$base/$asset" "$tmp/$asset" || fail "could not fetch $base/$asset" "Check your connection, then run the command again."
+  fi
+}
+
+# ================================================================ phase 3b: verify_binary
+verify_binary() {
+  if [ "$up_to_date" = 1 ]; then return 0; fi
+  sum_check "$tmp/$asset" "$tmp/SHA256SUMS" # always the binary itself, however it arrived
+  raw_sha="$(hash_file "$tmp/$asset")"
+  chmod 755 "$tmp/$asset"
+  if have xattr; then xattr -d com.apple.quarantine "$tmp/$asset" 2>/dev/null || true; fi
+  # CI signs ad hoc; sign again so the signature is valid for this exact file on this Mac
+  if have codesign; then
+    if codesign --force -s - "$tmp/$asset" >/dev/null 2>&1; then good "signed ad hoc for this Mac"
+    else warn "codesign failed; the program may refuse to start"; fi
+  fi
+  new_version="$("$tmp/$asset" --version 2>/dev/null | head -n1)" || new_version=""
+  [ -n "$new_version" ] || fail "the downloaded program does not run on this Mac" "It printed no version."
+  good "$new_version"
+}
+
+# ================================================================ phase 4: place_binary
+place_binary() {
+  stage 4 "Installing"
+  say "program   $bin"
+  say "your data stays in $data_dir"
+  if [ "$up_to_date" = 0 ] && [ -n "$old_version" ]; then say "upgrading from $old_version"; fi
+  if [ "$dry" = 1 ]; then
+    warn "dry run: nothing was installed, started or changed"
+    if [ "$autostart" = 1 ]; then say "would register the launchd service dev.phonedesk.agent (starts at login)"; fi
+    say "would start PhoneDesk on port $port and open http://localhost:$port/manage/"
+    exit 0
+  fi
+  if [ -f "$plist" ]; then svc_before=1; fi
+  if [ "$up_to_date" = 1 ]; then bin_state="already set"; return 0; fi
+  ask "Install PhoneDesk to $bin?" y || fail "cancelled" "Nothing was installed."
+  if [ -n "$old_version" ]; then bin_state="updated ($(ver_of "$old_version") -> $(ver_of "$new_version"))"; else bin_state=installed; fi
+  # let go of the old file: stop the login service first, then an agent we started by hand
+  if [ -x "$bin" ]; then run_bin "$bin" service uninstall >/dev/null 2>&1 || true; fi
+  if [ -f "$pidfile" ]; then
+    local old_pid
+    old_pid="$(cat "$pidfile" 2>/dev/null || true)"
+    case "$old_pid" in ''|*[!0-9]*) ;; *) kill "$old_pid" 2>/dev/null || true; sleep 1 ;; esac
+    rm -f "$pidfile"
+  fi
+  mkdir -p "$bin_dir" "$log_dir"
+  chmod 700 "$data_dir" 2>/dev/null || true
+  cp "$tmp/$asset" "$bin_dir/.phonedesk.new"
+  chmod 755 "$bin_dir/.phonedesk.new"
+  mv -f "$bin_dir/.phonedesk.new" "$bin" # same volume: the swap is atomic
+  printf 'raw=%s installed=%s\n' "$raw_sha" "$(hash_file "$bin")" >"$marker"
+  good "installed $new_version"
+}
+
+# ================================================================ phase 4b: link_cli
+RC_LINE='export PATH="$HOME/.phonedesk/bin:$PATH" # phonedesk'
+link_cli() {
+  if [ "$add_path" = 0 ]; then return 0; fi
+  local lb="$home_dir/.local/bin" cur f shell_name files=()
   case ":$PATH:" in
-    *":$local_bin:"*)
-      if [ -d "$local_bin" ] && { [ ! -e "$local_bin/phonedesk" ] || [ -L "$local_bin/phonedesk" ]; }; then
-        target="$(readlink "$local_bin/phonedesk" 2>/dev/null || true)"
-        if [ "$target" = "$bin" ]; then info "phonedesk is already on your PATH ($local_bin/phonedesk)"; path_state=already
-        else ln -sf "$bin" "$local_bin/phonedesk"; ok "phonedesk is on your PATH ($local_bin/phonedesk -> $bin)"; path_state=installed; fi
+    *":$lb:"*)
+      if [ -d "$lb" ] && { [ ! -e "$lb/phonedesk" ] || [ -L "$lb/phonedesk" ]; }; then
+        cur="$(readlink "$lb/phonedesk" 2>/dev/null || true)"
+        if [ "$cur" = "$bin" ]; then say "phonedesk is already on PATH ($lb/phonedesk)"; path_state=already
+        else ln -sf "$bin" "$lb/phonedesk"; good "phonedesk is on PATH ${C_DIM}($lb/phonedesk $G_ARROW $bin)${C_OFF}"; path_state=installed; fi
         path_how=symlink; return 0
       fi ;;
   esac
   shell_name="$(basename "${SHELL:-/bin/zsh}")"
-  local files=()
-  [ -f "$home_dir/.zshrc" ] && files+=("$home_dir/.zshrc")
-  [ -f "$home_dir/.bash_profile" ] && files+=("$home_dir/.bash_profile")
+  if [ -f "$home_dir/.zshrc" ]; then files+=("$home_dir/.zshrc"); fi
+  if [ -f "$home_dir/.bash_profile" ]; then files+=("$home_dir/.bash_profile"); fi
   if [ "${#files[@]}" = 0 ]; then
     if [ "$shell_name" = bash ]; then files+=("$home_dir/.bash_profile"); else files+=("$home_dir/.zshrc"); fi
   fi
   path_state=already
   for f in "${files[@]}"; do
-    if grep -qF "$PATH_MARK" "$f" 2>/dev/null && grep -F "$PATH_MARK" "$f" | grep -qF ".phonedesk/bin"; then
-      info "phonedesk is already on your PATH ($f has the line)"
+    if grep -F '# phonedesk' "$f" 2>/dev/null | grep -qF '.phonedesk/bin'; then
+      say "phonedesk is already on PATH ($f has the line)"
     else
-      [ -s "$f" ] && [ "$(tail -c1 "$f" | wc -l | tr -d " ")" = 0 ] && printf '\n' >>"$f"
-      printf '%s\n' "$path_line" >>"$f"
-      ok "added the PATH line to $f"; path_state=installed
+      if [ -s "$f" ] && [ "$(tail -c1 "$f" | wc -l | tr -d ' ')" = 0 ]; then printf '\n' >>"$f"; fi
+      printf '%s\n' "$RC_LINE" >>"$f"
+      good "added one PATH line to $f"; path_state=installed
     fi
     path_rc_files="$path_rc_files $f"
   done
   path_how=rc
 }
 
-expected_sum() { # expected_sum name sums-file -> the lowercase sha256 listed for name
-  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print tolower($1); exit } }' "$2"
-}
-service_matches() { # the launchd agent exists, runs THIS binary on THIS port, and is loaded
-  local plist="$agents_dir/dev.phonedesk.agent.plist"
+# ================================================================ phase 5: wire_service
+# The launchd plist is ours when its checksum matches what we recorded in $marker.
+service_current() {
   [ -f "$plist" ] || return 1
-  # the plist is the one WE wrote (its checksum is recorded in .release), so it runs the program installed here
-  [ "$(sed -n 's/^svc=//p' "$bin_dir/.release" 2>/dev/null)" = "$(sha256_of "$plist" | tr 'A-F' 'a-f')" ] || return 1
-  if [ "$port" = 7420 ]; then ! grep -qF "<string>--port</string>" "$plist"; else grep -F -A1 "<string>--port</string>" "$plist" | grep -qF "<string>$port</string>"; fi || return 1
+  [ "$(sed -n 's/^svc=//p' "$marker" 2>/dev/null)" = "$(hash_file "$plist")" ] || return 1
+  if [ "$port" = 7420 ]; then ! grep -qF '<string>--port</string>' "$plist"
+  else grep -F -A1 '<string>--port</string>' "$plist" | grep -qF "<string>$port</string>"; fi || return 1
   "${PHONEDESK_LAUNCHCTL:-launchctl}" print "gui/$(id -u)/dev.phonedesk.agent" >/dev/null 2>&1
 }
-
-record_service() { # remember the checksum of the plist we just wrote
-  local plist="$agents_dir/dev.phonedesk.agent.plist" r="$bin_dir/.release"
-  [ -f "$plist" ] && [ -f "$r" ] || return 0
-  { grep -v '^svc=' "$r" || true; printf 'svc=%s\n' "$(sha256_of "$plist" | tr 'A-F' 'a-f')"; } >"$r.tmp" && mv -f "$r.tmp" "$r"
+remember_service() {
+  [ -f "$plist" ] && [ -f "$marker" ] || return 0
+  { grep -v '^svc=' "$marker" || true; printf 'svc=%s\n' "$(hash_file "$plist")"; } >"$marker.tmp" && mv -f "$marker.tmp" "$marker"
 }
+note_service() { if [ "$svc_before" = 1 ]; then svc_state=updated; else svc_state=installed; fi; remember_service; }
 
-# Who listens on a TCP port on this machine: prints "pid<TAB>command line", nothing when the port is free or lsof is missing.
-port_holder() {
-  local p="$1" pid
-  have lsof || return 0
-  pid="$(lsof -nP -iTCP:"$p" -sTCP:LISTEN -t 2>/dev/null | head -n 1)"
-  [ -n "$pid" ] || return 0
-  printf '%s\t%s\n' "$pid" "$(ps -p "$pid" -o command= 2>/dev/null | cut -c1-120)"
-}
-
-# Short "phonedesk 0.1.1 (abc1234)" of the agent answering on the port, from /api/about; empty when it does not answer.
-agent_version_line() {
-  local j ver commit dirty
-  j="$(curl -fsS --max-time 2 "http://127.0.0.1:$1/api/about" 2>/dev/null)" || return 0
-  ver="$(printf '%s' "$j" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  commit="$(printf '%s' "$j" | sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  dirty="$(printf '%s' "$j" | sed -n 's/.*"dirty"[[:space:]]*:[[:space:]]*\(true\).*/-dirty/p')"
-  [ -n "$ver" ] || return 0
-  if [ -n "$commit" ]; then printf 'phonedesk %s (%s%s)' "$ver" "$commit" "$dirty"; else printf 'phonedesk %s' "$ver"; fi
-}
-
-# ---------- 1. this computer ----------
-step "Checking this computer"
-[ "$(uname -s)" = "Darwin" ] || die "PhoneDesk's installer supports macOS only for now (this is $(uname -s))."
-arch="$(uname -m)"
-case "$arch" in
-  arm64) asset_arch=arm64 ;;
-  x86_64)
-    asset_arch=x64
-    # a shell running under Rosetta on an Apple silicon Mac still wants the native build
-    if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then asset_arch=arm64; fi ;;
-  *) die "unsupported processor: $arch" ;;
-esac
-asset="phonedesk-darwin-$asset_arch"
-ok "macOS on $arch, using $asset"
-
-# ---------- 2. which release ----------
-step "Finding the release"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/phonedesk-setup.XXXXXX")"
-if [ -n "${PHONEDESK_RELEASE_BASE:-}" ]; then
-  base="${PHONEDESK_RELEASE_BASE%/}"; base_is_custom=1
-  info "using PHONEDESK_RELEASE_BASE=$base"
-else
-  gh_url="${PHONEDESK_GITHUB_URL:-https://github.com}"; api_url="${PHONEDESK_API_URL:-https://api.github.com}"
-  gh_url="${gh_url%/}"; api_url="${api_url%/}"
-  if [ -n "${PHONEDESK_GITHUB_URL:-}" ]; then base_is_custom=1; fi
-  if [ -z "$version" ]; then
-    have curl || die "curl is required"
-    # GitHub answers 5xx now and then: retry the redirect lookup, then fall back to the API, and say what failed.
-    tag=""; why=""
-    # test knobs: PHONEDESK_GITHUB_URL / PHONEDESK_API_URL point the lookup at a local server (then plain http is allowed)
-    lookup_proto=(--proto '=https' --proto-redir '=https'); if [ -n "${PHONEDESK_GITHUB_URL:-}${PHONEDESK_API_URL:-}" ]; then lookup_proto=(--proto '=http,https'); fi
-    for attempt in 1 2 3 4; do
-      tag="$(curl -fsSLI --retry 2 --retry-delay "${PHONEDESK_RETRY_SECONDS:-2}" --connect-timeout 15 "${lookup_proto[@]}" -o /dev/null -w '%{url_effective}' "$gh_url/$repo/releases/latest" 2>"$tmp/latest.err" | sed -n 's#.*/tag/##p')" || tag=""
-      [ -n "$tag" ] && break
-      tag="$(curl -fsSL --retry 2 --retry-delay "${PHONEDESK_RETRY_SECONDS:-2}" --connect-timeout 15 "${lookup_proto[@]}" -H 'Accept: application/vnd.github+json' "$api_url/repos/$repo/releases/latest" 2>>"$tmp/latest.err" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
-      [ -n "$tag" ] && break
-      why="$(tr '\n' ' ' <"$tmp/latest.err" | sed 's/  */ /g')"
-      [ "$attempt" -lt 4 ] && { info "GitHub did not answer (${why:-no response}), trying again…"; sleep $((attempt * ${PHONEDESK_RETRY_SECONDS:-2})); }
-    done
-    [ -n "$tag" ] || die "could not reach GitHub to find the latest release of $repo (${why:-no response}). Check your connection and run the command again, or pick a version with --version 0.1.1 (or PHONEDESK_VERSION=0.1.1)"
-  else
-    tag="v$version"
-  fi
-  base="$gh_url/$repo/releases/download/$tag"
-  info "release $tag"
-fi
-
-# ---------- 3. download and check ----------
-fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "could not download $base/SHA256SUMS"
-
-# Already installed and intact? Setup leaves $bin_dir/.release with the sha256 of the release file it installed and of the file
-# on disk (it is signed again locally, so the two differ). Same release sum + untouched file + it runs = nothing to download.
-old_version=""
-if [ -x "$bin" ]; then old_version="$(run_bin "$bin" --version 2>/dev/null | head -n1 || true)"; fi
-up_to_date=0
-want_raw="$(expected_sum "$asset" "$tmp/SHA256SUMS")"
-if [ "$force" = 0 ] && [ -n "$old_version" ] && [ -n "$want_raw" ] && [ -f "$bin_dir/.release" ]; then
-  rel_raw="$(sed -n 's/^raw=\([0-9a-f]*\).*/\1/p' "$bin_dir/.release")"; rel_inst="$(sed -n 's/.* installed=\([0-9a-f]*\).*/\1/p' "$bin_dir/.release")"
-  if [ "$rel_raw" = "$want_raw" ] && [ -n "$rel_inst" ] && [ "$(sha256_of "$bin" | tr 'A-F' 'a-f')" = "$rel_inst" ]; then up_to_date=1; fi
-fi
-if [ "$up_to_date" = 1 ]; then
-  new_version="$old_version"
-  ok "PhoneDesk $(printf '%s' "$old_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p') is already installed (checksum matches); nothing to download"
-fi
-if [ "$up_to_date" = 0 ]; then
-# Releases publish a gzip of every binary (about a third of the size). Use it when SHA256SUMS lists it and it downloads;
-# older releases only have the raw binary, so fall back to that.
-got_raw=0
-if listed "$asset.gz" "$tmp/SHA256SUMS"; then
-  step "Downloading $asset.gz$(size_note "$base/$asset.gz")"
-  if fetch_big "$base/$asset.gz" "$tmp/$asset.gz"; then
-    check_sum "$tmp/$asset.gz" "$tmp/SHA256SUMS"
-    have gzip || die "gzip is required to unpack the download"
-    gzip -dc "$tmp/$asset.gz" >"$tmp/$asset" || die "could not unpack $asset.gz"
-    rm -f "$tmp/$asset.gz"
-    got_raw=1
-  else
-    caution "the compressed download failed; trying the plain binary"
-    rm -f "$tmp/$asset.gz"
-  fi
-fi
-if [ "$got_raw" = 0 ]; then
-  step "Downloading $asset$(size_note "$base/$asset")"
-  fetch_big "$base/$asset" "$tmp/$asset" || die "could not download $base/$asset"
-fi
-check_sum "$tmp/$asset" "$tmp/SHA256SUMS" # always the binary itself, whichever way it arrived
-raw_sha="$(sha256_of "$tmp/$asset" | tr 'A-F' 'a-f')"
-chmod 755 "$tmp/$asset"
-if have xattr; then xattr -d com.apple.quarantine "$tmp/$asset" 2>/dev/null || true; fi
-# release binaries are ad-hoc signed in CI; sign again here so the signature is valid for this exact file on this Mac
-if have codesign; then
-  codesign --force -s - "$tmp/$asset" >/dev/null 2>&1 && ok "ad-hoc signed" || caution "could not sign the binary (codesign failed); it may not start"
-fi
-new_version="$("$tmp/$asset" --version 2>/dev/null | head -n1)" || new_version=""
-[ -n "$new_version" ] || die "the downloaded binary does not run on this Mac (it printed no version)"
-ok "$new_version"
-fi # up_to_date = 0
-
-# ---------- 4. install ----------
-step "Installing"
-info "program:  $bin"
-info "your data stays in $data_dir"
-if [ "$up_to_date" = 1 ]; then info "up to date: $old_version"; elif [ -n "$old_version" ]; then info "replacing $old_version"; fi
-if [ "$dry" = 1 ]; then
-  caution "dry run: nothing was installed, started or changed"
-  [ "$autostart" = 1 ] && info "would install the launchd service dev.phonedesk.agent (start at login)"
-  info "would start PhoneDesk on port $port and open http://localhost:$port/manage/"
-  exit 0
-fi
-bin_state="already set"
-svc_before=0; [ -f "$agents_dir/dev.phonedesk.agent.plist" ] && svc_before=1
-if [ "$up_to_date" = 0 ]; then
-ask "Install PhoneDesk to $bin?" y || die "cancelled; nothing was installed"
-if [ -n "$old_version" ]; then bin_state="updated ($(printf '%s' "$old_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p') -> $(printf '%s' "$new_version" | sed -n 's/^phonedesk \([^ ]*\).*/\1/p'))"; else bin_state=installed; fi
-
-# stop what is running so the file can be replaced: the service first, then a manually started agent
-if [ -x "$bin" ]; then run_bin "$bin" service uninstall >/dev/null 2>&1 || true; fi
-if [ -f "$pidfile" ]; then
-  old_pid="$(cat "$pidfile" 2>/dev/null || true)"
-  case "$old_pid" in ''|*[!0-9]*) ;; *) kill "$old_pid" 2>/dev/null || true; sleep 1 ;; esac
-  rm -f "$pidfile"
-fi
-
-mkdir -p "$bin_dir" "$log_dir"
-chmod 700 "$data_dir" 2>/dev/null || true
-cp "$tmp/$asset" "$bin_dir/.phonedesk.new"
-chmod 755 "$bin_dir/.phonedesk.new"
-mv -f "$bin_dir/.phonedesk.new" "$bin"  # atomic replace on the same volume
-printf 'raw=%s installed=%s\n' "$raw_sha" "$(sha256_of "$bin" | tr 'A-F' 'a-f')" >"$bin_dir/.release"
-ok "installed $new_version"
-fi # up_to_date = 0
-path_state="skipped"
-if [ "$add_path" = 1 ]; then add_to_path; fi
-# the launchd agent: keep it when it already runs this binary on this port, otherwise (re)install it
-svc_state="skipped"
-if [ "$autostart" = 1 ] && service_matches && [ "$up_to_date" = 1 ]; then
-  svc_state="already set"; autostart=2
-elif [ "$autostart" = 1 ]; then
-  ask "Start PhoneDesk automatically when you log in?" y || autostart=0
-fi
-
-# ---------- 5. start ----------
-if [ "$start" = 1 ]; then
-  holder="$(port_holder "$port")"
+preflight_port() { # something else on the port would answer the health check below: stop and say who
+  local owner pid cmd
   already_running=0
-  if [ -n "$holder" ] && [ "$up_to_date" = 1 ] && [ "$(agent_version_line "$port")" = "$new_version" ]; then
-    already_running=1; info "PhoneDesk is already running on port $port"
-  elif [ -n "$holder" ]; then
-    holder_pid="${holder%%$'\t'*}"; holder_cmd="${holder#*$'\t'}"
-    die "port $port is already in use by process $holder_pid ($holder_cmd). Stop it with: kill $holder_pid   (or install on another port: --port 7421). The program is installed at $bin; nothing was started."
+  owner="$(port_owner "$port")"
+  [ -n "$owner" ] || return 0
+  if [ "$up_to_date" = 1 ] && [ "$(agent_line "$port")" = "$new_version" ]; then
+    already_running=1; say "agent already running on port $port"; return 0
   fi
-fi
-if [ "$autostart" = 2 ]; then
-  ok "the background service is already set up (same program, port $port); keeping it"
-  autostart=1
-elif [ "$autostart" = 1 ] && [ "$start" = 1 ]; then
-  step "Setting up the background service"
-  if run_bin "$bin" service install --port "$port"; then
-    ok "PhoneDesk will start at login and restart if it crashes (logs: $log_dir)"
-    if [ "$svc_before" = 1 ]; then svc_state=updated; else svc_state=installed; fi; record_service
+  pid="${owner%%$'\t'*}"; cmd="${owner#*$'\t'}"
+  fail "port $port is taken by process $pid ($cmd)" "Free it with: kill $pid   - or install on another port with --port 7421. The program is in place at $bin; nothing was started."
+}
+
+wire_service() {
+  stage 5 "Background service"
+  link_cli
+  local keep=0
+  if [ "$autostart" = 1 ] && [ "$up_to_date" = 1 ] && service_current; then keep=1; fi
+  if [ "$autostart" = 1 ] && [ "$keep" = 0 ]; then
+    ask "Start PhoneDesk automatically when you log in?" y || autostart=0
+  fi
+  if [ "$start" = 1 ]; then preflight_port; fi
+  if [ "$autostart" = 1 ] && [ "$keep" = 1 ]; then
+    svc_state="already set"; good "service already registered (same program, port $port), leaving it alone"
+  elif [ "$autostart" = 1 ]; then
+    if [ "$start" = 1 ]; then
+      if run_bin "$bin" service install --port "$port"; then
+        good "login service registered; it restarts after a crash ${C_DIM}(logs: $log_dir)${C_OFF}"; note_service
+      else
+        warn "could not register the service; starting without it"; autostart=0
+      fi
+    elif run_bin "$bin" service install --port "$port" >/dev/null 2>&1; then note_service
+    else warn "could not register the service"; fi
   else
-    caution "could not install the service; starting PhoneDesk without it"
-    autostart=0
+    say "no login service (skipped)"
   fi
-elif [ "$autostart" = 1 ]; then
-  if run_bin "$bin" service install --port "$port" >/dev/null 2>&1; then if [ "$svc_before" = 1 ]; then svc_state=updated; else svc_state=installed; fi; record_service; else caution "could not install the service"; fi
-fi
-# make sure installed Claude/Codex hooks (if any) point at this binary
-run_bin "$bin" hooks repoint --port "$port" >/dev/null 2>&1 || true
+  # make sure Claude/Codex hooks that already exist point at this binary
+  run_bin "$bin" hooks repoint --port "$port" >/dev/null 2>&1 || true
+}
 
-if [ "$start" = 1 ] && [ "$autostart" = 0 ] && [ "${already_running:-0}" = 0 ]; then
-  step "Starting PhoneDesk"
-  # exec keeps one process, so the pid written below is the agent's own and a later update can stop it
-  ( cd "$data_dir" && exec env "${child_env[@]}" nohup "$bin" --port "$port" >>"$log_dir/agent.out.log" 2>>"$log_dir/agent.err.log" </dev/null ) &
-  echo $! >"$pidfile"
-fi
-
-if [ "$start" = 1 ]; then
-  step "Waiting for PhoneDesk"
-  info_json=""
-  for _ in $(seq 1 40); do
-    if info_json="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/api/pairing" 2>/dev/null)"; then break; fi
-    info_json=""; sleep 0.5
+# ================================================================ phase 6: launch
+launch() {
+  stage 6 "Starting PhoneDesk"
+  if [ "$start" = 0 ]; then say "not started (--no-start). Start it with: $bin"; return 0; fi
+  if [ "$autostart" = 0 ] && [ "$already_running" = 0 ]; then
+    # exec keeps a single process, so the pid saved here is the agent's own and a later upgrade can stop it
+    ( cd "$data_dir" && exec env "${child_env[@]}" nohup "$bin" --port "$port" >>"$log_dir/agent.out.log" 2>>"$log_dir/agent.err.log" </dev/null ) &
+    echo $! >"$pidfile"
+  fi
+  pairing=""
+  local n
+  for n in $(seq 1 40); do
+    if pairing="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/api/pairing" 2>/dev/null)"; then break; fi
+    pairing=""; sleep 0.5
   done
-  [ -n "$info_json" ] || die "PhoneDesk did not answer on port $port. Look at $log_dir/agent.err.log"
-  # the health check could be answered by ANOTHER process on that port: make sure it is the agent just installed
-  want_line="$new_version"; got_line=""
-  for _ in $(seq 1 20); do
-    got_line="$(agent_version_line "$port")"
-    [ "$got_line" = "$want_line" ] && break
+  [ -n "$pairing" ] || fail "PhoneDesk did not answer on port $port" "See $log_dir/agent.err.log"
+  # the answer could come from ANOTHER process on that port: it must be the build installed a moment ago
+  local seen=""
+  for n in $(seq 1 20); do
+    seen="$(agent_line "$port")"
+    if [ "$seen" = "$new_version" ]; then break; fi
     sleep 0.5
   done
-  if [ "$got_line" != "$want_line" ]; then
-    log_tail="$(tail -n 8 "$log_dir/agent.err.log" 2>/dev/null | sed 's/^/        /' || true)"
-    die "the agent answering on port $port is not the one just installed (it reports \"${got_line:-nothing}\", installed: \"$want_line\"). Another PhoneDesk is probably holding the port: stop it, or use --port. Log tail ($log_dir/agent.err.log):
-$log_tail"
+  if [ "$seen" != "$new_version" ]; then
+    fail "the agent on port $port is not the one just installed" "It reports \"${seen:-nothing}\" but we installed \"$new_version\". Another PhoneDesk probably owns the port: stop it, or use --port. Last log lines ($log_dir/agent.err.log):
+$(tail -n 8 "$log_dir/agent.err.log" 2>/dev/null | sed 's/^/      /' || true)"
   fi
-  pin="$(printf '%s' "$info_json" | sed -n 's/.*"pin"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]*\)"\{0,1\}.*/\1/p')"
-  url="$(printf '%s' "$info_json" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  url_local="$(printf '%s' "$info_json" | sed -n 's/.*"urlLocal"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  ok "running on port $port"
-  printf '\n  Phone URL:  %s\n  Pairing PIN: %s\n  Manage:     http://localhost:%s/manage/\n\n' "${url:-http://<this-computer>:$port}" "${pin:-see the terminal / logs}" "$port"
-  if [ -t 1 ] && [ -n "$pin" ] && [ -n "$url" ]; then "$bin" qr "${url_local:-$url}" 2>/dev/null || true; fi
-  info "Open the phone URL on a phone on the same Wi-Fi and enter the PIN."
-  if [ "$open_page" = 1 ] && have open && [ -z "${PHONEDESK_INSTALL_HOME:-}" ] && ! { [ "$up_to_date" = 1 ] && [ "${already_running:-0}" = 1 ]; }; then
-    if ask "Open the management page now?" y; then open "http://localhost:$port/manage/" >/dev/null 2>&1 || true; fi
+  good "agent is up on port $port"
+}
+
+# ================================================================ summary
+pairing=""
+summary() {
+  local pin url url_local
+  printf '\n%s  ── PhoneDesk ─────────────────────────%s\n' "$C_BRAND" "$C_OFF"
+  printf '  %-9s %s\n' Program "$bin_state" PATH "${path_state/already/already set}" Service "$svc_state"
+  if [ "$start" = 1 ] && [ -n "$pairing" ]; then
+    pin="$(printf '%s' "$pairing" | sed -n 's/.*"pin"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]*\)"\{0,1\}.*/\1/p')"
+    url="$(printf '%s' "$pairing" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    url_local="$(printf '%s' "$pairing" | sed -n 's/.*"urlLocal"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    printf '  %-9s %s\n' Phone "${url:-http://<this-mac>:$port}" PIN "${pin:-see the logs}" Manage "http://localhost:$port/manage/"
+    printf '%s  ───────────────────────────────────────%s\n' "$C_BRAND" "$C_OFF"
+    if [ -t 1 ] && [ -n "$pin" ] && [ -n "$url" ]; then printf '\n'; "$bin" qr "${url_local:-$url}" 2>/dev/null || true; fi
+    say "On a phone on the same Wi-Fi, open the Phone address and type the PIN (or scan the code)."
+    if [ "$open_page" = 1 ] && have open && [ -z "${PHONEDESK_INSTALL_HOME:-}" ] && ! { [ "$up_to_date" = 1 ] && [ "$already_running" = 1 ]; }; then
+      if ask "Open the manage page now?" y; then open "http://localhost:$port/manage/" >/dev/null 2>&1 || true; fi
+    fi
+  else
+    printf '%s  ───────────────────────────────────────%s\n' "$C_BRAND" "$C_OFF"
   fi
-else
-  info "Installed. Start it with: $bin"
-fi
-step "Done"
-printf '    %-9s %s\n' "Program" "$bin_state" "PATH" "${path_state/already/already set}" "Service" "$svc_state"
-if [ "$add_path" = 1 ] && [ "$path_how" = rc ] && [ "$path_state" = installed ]; then
-  rc_main="${path_rc_files# }"; rc_main="${rc_main%% *}"
-  info "Open a new terminal, then run: phonedesk doctor"
-  info "To use it in THIS terminal right now: source ${rc_main/#$home_dir/~}   (or: export PATH=\"\$HOME/.phonedesk/bin:\$PATH\")"
-elif [ "$add_path" = 1 ] && [ -n "$path_how" ]; then
-  info "Run: phonedesk doctor   (it is on your PATH)"
-else
-  info "Run: $bin doctor"
-fi
-info "Update: run the same install command again.  Remove: uninstall.sh (see the README)."
+  if [ "$add_path" = 1 ] && [ "$path_how" = rc ] && [ "$path_state" = installed ]; then
+    local rc="${path_rc_files# }"; rc="${rc%% *}"
+    say "New terminal windows will find phonedesk; try: phonedesk doctor"
+    say "This window: source ${rc/#$home_dir/~}   (or: export PATH=\"\$HOME/.phonedesk/bin:\$PATH\")"
+  elif [ "$add_path" = 1 ] && [ -n "$path_how" ]; then
+    say "Try: phonedesk doctor   (phonedesk is on your PATH)"
+  else
+    say "Try: $bin doctor"
+  fi
+  say "To upgrade, run the same command again. To remove: uninstall.sh (see the README)."
+}
+
+# ================================================================ main
+banner
+detect_platform
+resolve_release
+fetch_binary
+verify_binary
+place_binary
+wire_service
+launch
+summary

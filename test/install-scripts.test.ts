@@ -63,8 +63,8 @@ describe.skipIf(!mac)("setup.sh: compressed assets", () => {
     const { home, r } = run(makeRelease({ gz: "good" }));
     const text = out(r);
     expect(r.exitCode, text).toBe(0);
-    expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
-    expect(text.match(/matches SHA256SUMS/g)?.length).toBe(2); // the .gz, then the unpacked binary
+    expect(text).toMatch(/Fetching phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
+    expect(text.match(/checksum ok/g)?.length).toBe(2); // the .gz, then the unpacked binary
     expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(true);
   });
   test("over http: the size comes from HEAD, and a download cut in the middle continues with a Range request", async () => {
@@ -97,8 +97,8 @@ describe.skipIf(!mac)("setup.sh: compressed assets", () => {
       const r = await Bun.spawn(["bash", join(root, "setup.sh"), "--yes", "--no-autostart", "--no-start", "--no-open"], { env: env(home, `http://127.0.0.1:${port}`), stdout: "pipe", stderr: "pipe", stdin: new Blob([""]) });
       const text = (await new Response(r.stdout).text()) + (await new Response(r.stderr).text());
       expect(await r.exited, text).toBe(0);
-      expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
-      expect(text).toContain("continuing where it stopped");
+      expect(text).toMatch(/Fetching phonedesk-darwin-(arm64|x64)\.gz \(\d+ MB\)/);
+      expect(text).toContain("resuming from where it stopped");
       expect(hits.some((h) => h.startsWith("HEAD ") && h.includes(".gz"))).toBe(true);
       expect(hits.some((h) => /GET .*\.gz bytes=\d+-/.test(h))).toBe(true);
       expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(true);
@@ -109,25 +109,25 @@ describe.skipIf(!mac)("setup.sh: compressed assets", () => {
     const text = out(r);
     expect(r.exitCode, text).toBe(0);
     expect(text).not.toContain(".gz");
-    expect(text).toMatch(/Downloading phonedesk-darwin-(arm64|x64) \(\d+ MB\)/);
-    expect(text.match(/matches SHA256SUMS/g)?.length).toBe(1);
+    expect(text).toMatch(/Fetching phonedesk-darwin-(arm64|x64) \(\d+ MB\)/);
+    expect(text.match(/checksum ok/g)?.length).toBe(1);
   });
   test("the .gz is listed but cannot be downloaded: falls back to the plain binary", () => {
     const { r } = run(makeRelease({ gz: "no-file" }));
     const text = out(r);
     expect(r.exitCode, text).toBe(0);
-    expect(text).toContain("trying the plain binary");
+    expect(text).toContain("falling back to the uncompressed binary");
   });
   test("a .gz that does not match SHA256SUMS is refused, nothing is installed", () => {
     const { home, r } = run(makeRelease({ gz: "bad-sum" }));
     expect(r.exitCode).not.toBe(0);
-    expect(out(r)).toContain("does not match its SHA256SUMS entry");
+    expect(out(r)).toContain("checksum mismatch");
     expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
   });
   test("an intact .gz whose content is not the listed binary is refused after unpacking", () => {
     const { home, r } = run(makeRelease({ gz: "bad-content" }));
     expect(r.exitCode).not.toBe(0);
-    expect(out(r)).toContain("does not match its SHA256SUMS entry");
+    expect(out(r)).toContain("checksum mismatch");
     expect(existsSync(join(home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
   });
 });
@@ -147,12 +147,12 @@ describe.skipIf(!mac)("setup.sh", () => {
     const bin = join(home, ".phonedesk", "bin", "phonedesk");
     expect(existsSync(bin)).toBe(true);
     expect(statSync(bin).mode & 0o111).not.toBe(0);
-    expect(text).toContain("matches SHA256SUMS");
+    expect(text).toContain("checksum ok");
     expect(text).toMatch(/phonedesk \d+\.\d+\.\d+/);
-    expect(text).toContain(`Manage:     http://localhost:${port}/manage/`);
-    const pin = /Pairing PIN: (\d{6})/.exec(text)?.[1];
+    expect(text).toContain(`http://localhost:${port}/manage/`);
+    const pin = /PIN\s+(\d{6})/.exec(text)?.[1];
     expect(pin).toBeDefined();
-    expect(text).toMatch(new RegExp(`Phone URL:\\s+http://[^\\s]+:${port}`));
+    expect(text).toMatch(new RegExp(`Phone\\s+http://[^\\s]+:${port}`));
     const pid = Number(readFileSync(join(home, ".phonedesk", "agent.pid"), "utf8"));
     spawned.push(pid);
 
@@ -169,7 +169,7 @@ describe.skipIf(!mac)("setup.sh", () => {
     const port2 = await freePort();
     const r2 = sh("setup.sh", ["--yes", "--no-autostart", "--no-open", "--force", "--port", String(port2)], env(home, release)); // --force: the same release again
     expect(r2.exitCode, out(r2)).toBe(0);
-    expect(out(r2)).toContain("replacing phonedesk");
+    expect(out(r2)).toContain("upgrading from phonedesk");
     const pid2 = Number(readFileSync(join(home, ".phonedesk", "agent.pid"), "utf8"));
     spawned.push(pid2);
     expect(pid2).not.toBe(pid);
@@ -195,7 +195,7 @@ describe.skipIf(!mac)("setup.sh", () => {
     const home = newHome();
     const r = sh("setup.sh", ["--yes", "--no-autostart", "--no-open", "--no-start"], env(home, makeRelease({ tamper: true })));
     expect(r.exitCode).not.toBe(0);
-    expect(out(r)).toContain("does not match its SHA256SUMS entry");
+    expect(out(r)).toContain("checksum mismatch");
     expect(existsSync(join(home, ".phonedesk", "bin"))).toBe(false);
   });
 
@@ -203,7 +203,7 @@ describe.skipIf(!mac)("setup.sh", () => {
     const home = newHome();
     const r = sh("setup.sh", ["--yes", "--no-autostart", "--no-open", "--no-start"], env(home, makeRelease({ omit: true })));
     expect(r.exitCode).not.toBe(0);
-    expect(out(r)).toContain("is not listed in SHA256SUMS");
+    expect(out(r)).toContain("has no entry in SHA256SUMS");
     expect(existsSync(join(home, ".phonedesk", "bin"))).toBe(false);
   });
 
@@ -211,7 +211,7 @@ describe.skipIf(!mac)("setup.sh", () => {
     const home = newHome();
     const r = sh("setup.sh", ["--yes", "--no-start"], env(home, join(sandbox, "no-such-release")));
     expect(r.exitCode).not.toBe(0);
-    expect(out(r)).toContain("could not download");
+    expect(out(r)).toContain("could not fetch");
   });
 
   test("--dry-run verifies but changes nothing", () => {
@@ -225,7 +225,7 @@ describe.skipIf(!mac)("setup.sh", () => {
 
   test("bad options are errors", () => {
     const home = newHome();
-    expect(out(sh("setup.sh", ["--wat"], env(home, makeRelease())))).toContain("unknown option");
+    expect(out(sh("setup.sh", ["--wat"], env(home, makeRelease())))).toContain("unrecognised flag");
     expect(sh("setup.sh", ["--port", "abc"], env(home, makeRelease())).exitCode).not.toBe(0);
     expect(sh("setup.sh", ["--help"], env(home, makeRelease())).stdout.toString()).toContain("--no-autostart");
   });
@@ -325,10 +325,10 @@ describe.skipIf(!mac)("setup.sh: finding the latest release when GitHub misbehav
     try {
       const r = await run(gh);
       expect(r.code).not.toBe(0);
-      expect(r.text).toContain("could not reach GitHub to find the latest release");
+      expect(r.text).toContain("look up the latest release");
       expect(r.text).toContain("--version");
       expect(r.text).toContain("PHONEDESK_VERSION");
-      expect(r.text).toContain("trying again"); // it did retry
+      expect(r.text).toContain("retrying"); // it did retry
       expect(existsSync(join(r.home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
     } finally { gh.close(); }
   }, 60_000);
@@ -352,7 +352,7 @@ describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => 
     for (let i = 0; i < 2; i++) {
       const r = sh("setup.sh", [...base, "--no-start"], env(home, rel));
       expect(r.exitCode, out(r)).toBe(0);
-      if (i === 0) expect(out(r)).toMatch(/Open a new terminal, then run: phonedesk doctor[\s\S]*source ~?\/?.*\.zshrc/);
+      if (i === 0) expect(out(r)).toMatch(/New terminal windows will find phonedesk[\s\S]*source ~?\/?.*\.zshrc/);
     }
     const rc = readFileSync(join(home, ".zshrc"), "utf8");
     expect(rc.match(/\.phonedesk\/bin:\$PATH" # phonedesk/g)?.length).toBe(1); // idempotent
@@ -372,7 +372,7 @@ describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => 
     expect(r.exitCode, out(r)).toBe(0);
     expect(readlinkSync(join(home, ".local", "bin", "phonedesk"))).toBe(join(home, ".phonedesk", "bin", "phonedesk"));
     expect(existsSync(join(home, ".zshrc"))).toBe(false);
-    expect(out(r)).toContain("Run: phonedesk doctor");
+    expect(out(r)).toContain("Try: phonedesk doctor");
     const u = sh("uninstall.sh", ["--yes"], e);
     expect(u.exitCode, out(u)).toBe(0);
     expect(existsSync(join(home, ".local", "bin", "phonedesk"))).toBe(false);
@@ -392,7 +392,7 @@ describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => 
       const r = sh("setup.sh", [...base, "--port", String(holder.port)], env(home, makeRelease()));
       const text = out(r);
       expect(r.exitCode).not.toBe(0);
-      expect(text).toContain(`port ${holder.port} is already in use by process ${process.pid}`);
+      expect(text).toContain(`port ${holder.port} is taken by process ${process.pid}`);
       expect(text).toContain("--port");
       expect(existsSync(join(home, ".phonedesk", "agent.pid"))).toBe(false);
     } finally { holder.stop(true); }
@@ -405,7 +405,7 @@ describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => 
     const pid = Number(readFileSync(join(home, ".phonedesk", "agent.pid"), "utf8").trim());
     if (pid) spawned.push(pid);
     expect(r.exitCode, text).toBe(0);
-    expect(text).toContain(`running on port ${port}`);
+    expect(text).toContain(`agent is up on port ${port}`);
   }, 60_000);
 });
 
@@ -429,11 +429,11 @@ describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", (
     const text = out(r2);
     expect(r2.exitCode, text).toBe(0);
     expect(Date.now() - t0).toBeLessThan(15_000);
-    expect(text).toMatch(/PhoneDesk \d+\.\d+\.\d+ is already installed/);
-    expect(text).not.toContain("Downloading");
+    expect(text).toMatch(/PhoneDesk \d+\.\d+\.\d+ is up to date/);
+    expect(text).not.toContain("Fetching");
     expect(text).not.toContain("[Y/n]");
-    expect(text).toContain("already on your PATH");
-    expect(text).toContain("PhoneDesk is already running");
+    expect(text).toContain("already on PATH");
+    expect(text).toContain("agent already running");
     expect(sum(text)).toEqual(["already set", "already set", "skipped"]);
     expect(statSync(bin).mtimeMs).toBe(before);
     expect(readFileSync(join(home, ".zshrc"), "utf8")).toBe(rc);
@@ -442,7 +442,7 @@ describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", (
     // --force reinstalls anyway
     const r3 = sh("setup.sh", [...args, "--force"], env(home, release));
     expect(r3.exitCode, out(r3)).toBe(0);
-    expect(out(r3)).toContain("Downloading");
+    expect(out(r3)).toContain("Fetching");
     expect(sum(out(r3))?.[0]).toMatch(/^updated/);
     spawned.push(Number(readFileSync(pidfile, "utf8")));
   }, 90_000);
@@ -456,7 +456,7 @@ describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", (
     const plist = join(home, "Library", "LaunchAgents", "dev.phonedesk.agent.plist");
     const same = readFileSync(plist, "utf8");
     const r2 = sh("setup.sh", [...args, "--port", "7541"], e);
-    expect(out(r2)).toContain("the background service is already set up");
+    expect(out(r2)).toContain("service already registered");
     expect(sum(out(r2))?.[2]).toBe("already set");
     expect(readFileSync(plist, "utf8")).toBe(same);
     const r3 = sh("setup.sh", [...args, "--port", "7542"], e);
@@ -471,13 +471,13 @@ describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", (
     // a different release (another file, another sum): downloaded and replaced
     const up = sh("setup.sh", args, env(home, makeRelease({ variant: "v2" })));
     expect(up.exitCode, out(up)).toBe(0);
-    expect(out(up)).not.toContain("already installed");
+    expect(out(up)).not.toContain("up to date");
     expect(sum(out(up))?.[0]).toMatch(/^updated \(/);
     // the installed file changed behind our back: reinstalled even though the release is the same
     const rel = makeRelease({ variant: "v2" });
     writeFileSync(bin, readFileSync(bin, "utf8") + "# edited\n");
     const fix = sh("setup.sh", args, env(home, rel));
-    expect(out(fix)).not.toContain("already installed");
+    expect(out(fix)).not.toContain("up to date");
     expect(fix.exitCode, out(fix)).toBe(0);
     expect(readFileSync(bin, "utf8")).not.toContain("# edited");
   }, 90_000);
@@ -487,7 +487,7 @@ describe.skipIf(!mac)("setup.sh: running it again does not redo what is done", (
     const args = ["--yes", "--no-open", "--no-start", "--no-autostart"];
     expect(sh("setup.sh", args, env(home, rel)).exitCode).toBe(0);
     rmSync(join(home, ".phonedesk", "bin", ".release"));
-    expect(out(sh("setup.sh", args, env(home, rel)))).not.toContain("already installed");
-    expect(out(sh("setup.sh", args, env(home, rel)))).toContain("already installed");
+    expect(out(sh("setup.sh", args, env(home, rel)))).not.toContain("up to date");
+    expect(out(sh("setup.sh", args, env(home, rel)))).toContain("up to date");
   }, 90_000);
 });

@@ -1,4 +1,4 @@
-import { StyleSelect } from "@/components/style-select";
+import { OptionCards, StyleChips, modeOptions, orientationOptions, radiusOptions } from "@/components/visual-options";
 import { LANGUAGES, asLanguage, t, useLanguage } from "@/lib/i18n";
 import { useState } from "react";
 import { IconArrowDown as ArrowDown, IconArrowRight as ArrowRight, IconRotate as RotateLeft, IconCheck as Check } from "@tabler/icons-react";
@@ -128,26 +128,19 @@ export function ThemePanel({ layout, pageId, onChange, orientation, onOrientatio
           <section aria-labelledby="t-basic" className="flex flex-col gap-4">
             <h2 id="t-basic" className="text-sm font-semibold">{t("Basics")}</h2>
             <Field label={t("Mode")} id="t-mode">
-              <SegmentedControl
-                aria-label={t("Light or dark mode")}
-                value={th.mode ?? THEME_DEFAULTS.mode}
-                onValueChange={(v) => set({ mode: v as Theme["mode"] })}
-                options={[{ value: "dark", label: t("Dark") }, { value: "light", label: t("Light") }, { value: "auto", label: t("Auto") }]}
-              />
+              <OptionCards label={t("Light or dark mode")} value={th.mode ?? THEME_DEFAULTS.mode} onChange={(v) => set({ mode: v })} options={modeOptions()} />
             </Field>
             <Field label={t("Accent color")} id="t-accent">
               <ColorField id="t-accent" value={th.accent} onChange={(v) => set({ accent: v })} fallback={THEME_DEFAULTS.accent} />
             </Field>
+            <Field label={t("Corner style")} id="t-radius" hint={t("How round the tiles are. Fine-tune in More options.")}>
+              <OptionCards label={t("Corner style")} cols={4} value={String([0, 8, 14, 24].reduce((p, c) => (Math.abs(c - (th.radius ?? THEME_DEFAULTS.radius)) < Math.abs(p - (th.radius ?? THEME_DEFAULTS.radius)) ? c : p)))} onChange={(v) => set({ radius: Number(v) })} options={radiusOptions(th.accent ?? THEME_DEFAULTS.accent)} />
+            </Field>
             <Field label={t("Tile style")} id="t-tilestyle" hint={t("iOS: rounded colored tiles like Shortcuts, white icon, label below the tile.")}>
-              <StyleSelect id="t-tilestyle" label={t("Tile style")} follow={false} value={th.tileStyle ?? THEME_DEFAULTS.tileStyle} onChange={(v) => v && set({ tileStyle: v })} color={th.accent ?? THEME_DEFAULTS.accent} />
+              <StyleChips label={t("Tile style")} follow={false} value={th.tileStyle ?? THEME_DEFAULTS.tileStyle} onChange={(v) => v && set({ tileStyle: v })} color={th.accent ?? THEME_DEFAULTS.accent} />
             </Field>
             <Field label={t("Phone orientation")} id="t-orient" hint={t("Landscape: a grid made for a phone held sideways, it rotates when held upright.")}>
-              <SegmentedControl
-                aria-label={t("Phone orientation")}
-                value={th.orientation ?? THEME_DEFAULTS.orientation}
-                onValueChange={(v) => set({ orientation: v as Theme["orientation"] })}
-                options={[{ value: "landscape", label: t("Landscape") }, { value: "portrait", label: t("Portrait") }, { value: "auto", label: t("Auto") }]}
-              />
+              <OptionCards label={t("Phone orientation")} value={th.orientation ?? THEME_DEFAULTS.orientation} onChange={(v) => set({ orientation: v })} options={orientationOptions()} />
             </Field>
             <Field label={t("Temperature unit")} id="t-temp" hint={t("Every temperature on the phone follows this, whatever unit the source reports.")}>
               <SegmentedControl

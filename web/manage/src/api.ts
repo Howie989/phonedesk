@@ -263,7 +263,7 @@ export const api = {
     });
   },
   openDoctorSettings: (id: string) => request<unknown>("/api/doctor/open", json("POST", { id })),
-  requestDoctor: (id: string) => request<unknown>("/api/doctor/request", json("POST", { id })),
+  requestDoctor: (id: string, reset = false) => request<unknown>("/api/doctor/request", json("POST", { id, reset })),
   getIntegrations: async () => {
     const raw = await request<unknown>("/api/integrations");
     // An old agent may still send an "openusage" block: it is ignored.

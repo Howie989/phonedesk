@@ -221,6 +221,10 @@ describe("text output and language", () => {
   test("requestable ids", () => {
     expect(D.describeRequest("accessibility")).toEqual({ id: "accessibility", kind: "accessibility" });
     expect(D.describeRequest("automation-music")).toEqual({ id: "automation-music", kind: "automation", bundle: "com.apple.Music" });
+    expect(D.describeRequest("local-network")).toEqual({ id: "local-network", kind: "local-network" });
+    expect(D.tccServiceFor("accessibility")).toBe("Accessibility");
+    expect(D.tccServiceFor("automation-music")).toBe("AppleEvents");
+    expect(D.tccServiceFor("local-network")).toBeNull();
     expect(D.describeRequest("firewall")).toBeNull();
     expect(D.describeRequest("../x")).toBeNull();
   });

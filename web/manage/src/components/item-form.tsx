@@ -1,4 +1,4 @@
-import { StyleSelect } from "@/components/style-select";
+import { SizeGrid, StyleChips } from "@/components/visual-options";
 import { useEffect, useState } from "react";
 import { IconAlertTriangle as AlertTriangle, IconBan as Ban, IconCopy as Copy, IconMinus as Minus, IconPlus as Plus, IconTrash as Trash } from "@tabler/icons-react";
 import { Alert } from "@/components/ui/knowns/alert";
@@ -130,13 +130,14 @@ export function ItemForm({ item, page, pages, accent, onChange, onDuplicate, onD
             <Stepper id="f-h" value={h} min={1} max={page.rows} onChange={(v) => resize(w, v)} />
           </Field>
         </div>
+        <SizeGrid w={w} h={h} maxW={page.columns} maxH={page.rows} onPick={resize} />
         {sizeError && <p role="alert" className="-mt-1.5 text-xs text-destructive">{sizeError}</p>}
         <p className="-mt-1.5 text-xs text-muted-foreground">{t("Drag a tile corner on the phone to resize, drag the tile to move it.")}</p>
       </Section>
 
       <Section title={t("Tile style")}>
         <Field label={t("Fill style")} id="f-style" hint={t("Soft, Solid and Outline use the item colour (or the theme accent).")}>
-          <StyleSelect id="f-style" label={t("Fill style")} value={item.style ?? ""} onChange={(v) => set({ style: v || undefined })} color={item.color ?? accent ?? "#22d3ee"} />
+          <StyleChips label={t("Fill style")} value={item.style ?? ""} onChange={(v) => set({ style: v || undefined })} color={item.color ?? accent ?? "#22d3ee"} />
         </Field>
         <Field label={t("Text color")} id="f-text-color">
           <ColorField id="f-text-color" value={item.textColor} onChange={(v) => set({ textColor: v })} noneLabel={t("Follow theme")} />

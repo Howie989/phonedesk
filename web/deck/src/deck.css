@@ -3391,3 +3391,61 @@
 .pd-pager--rot { touch-action: none; -ms-touch-action: none; overflow-x: hidden; -webkit-scroll-snap-type: none; scroll-snap-type: none; }
 
 .pd-root--rot, .pd-root--rot * { touch-action: none; -ms-touch-action: none; }
+
+/* ---------- small phones (short side <= 340px, e.g. iPhone 5s): slim chrome, tighter grid, lighter quota header ---------- */
+.pd-root--sm .pd-head { padding: 4px 10px 0; min-height: 26px; }
+.pd-root--sm .pd-conn { font-size: 13px; }
+.pd-root--sm .pd-conn em { margin-left: 6px; font-size: 11px; }
+.pd-root--sm .pd-dot { width: 7px; height: 7px; margin-right: 6px; }
+.pd-root--sm .pd-iconbtn { width: 28px; height: 28px; margin-left: 2px; margin-right: -4px; }
+.pd-root--sm .pd-page { padding: 3px 10px 3px; }
+.pd-root--sm .pd-grid { grid-gap: 6px; gap: 6px; }
+.pd-root--sm .pd-tile { border-radius: 12px !important; }
+.pd-root--sm .pd-dots { padding: 0 10px 3px; }
+.pd-root--sm .pd-dots__b { padding-top: 0; padding-bottom: 0; }
+.pd-root--sm .pd-qtitle { margin-left: 6px; }
+.pd-root--sm .pd-qtitle b { font-size: 13px; }
+.pd-root--sm .pd-qhead__p { padding-left: 4px; font-size: 15px; }
+.pd-root--sm .pd-qhead__p i { display: none; }
+.pd-root--sm .pd-qm__s { font-size: 10px; }
+.pd-root.pd-root--sm .pd-dots__b { height: 16px; }
+.pd-um__tot { min-width: 0; overflow: hidden; }
+.pd-um__tot .pd-um__w { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-root--sm .pd-um__n { font-size: 26px; }
+
+/* compact quota row */
+.pd-quota--row { -webkit-flex-direction: row; flex-direction: row; align-items: center; }
+.pd-qrow__n { -webkit-flex: none; flex: none; min-width: 0; margin-left: 8px; max-width: 60%; display: -webkit-flex; display: flex; align-items: center; }
+.pd-qrow__n b { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pd-qrow__n .pd-qplan { margin-left: 6px; }
+.pd-qrow__bar { -webkit-flex: 1; flex: 1; min-width: 30px; max-width: 70px; height: 5px; margin-left: auto; margin-right: 0; border-radius: 3px; background: rgba(139, 139, 148, 0.28); overflow: hidden; }
+.pd-qrow__bar i { display: block; height: 100%; border-radius: 3px; }
+.pd-qrow__p { -webkit-flex: none; flex: none; margin-left: 8px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pd-root--sm .pd-qrow__n b { font-size: 13px; }
+.pd-root--sm .pd-qrow__p { font-size: 15px; margin-left: 6px; }
+/* sm tier: now playing controls, stat sparklines */
+.pd-root--sm .pd-npl__play { width: 36px !important; height: 36px !important; }
+.pd-root--sm .pd-npl__ghost { width: 32px !important; height: 32px !important; }
+.pd-root--sm .pd-npl--medium .pd-npl__tr, .pd-root--sm .pd-npl--mid .pd-npl__tr { margin-top: 0; min-height: 0; }
+.pd-root--sm .pd-spark { height: 28% !important; opacity: 0.75; }
+.pd-qrow__n { margin-right: 8px; }
+/* session rows: the rolling digits need a taller window than 1.15em at 10-11px or their tops and bottoms are cut */
+.pd-ses__s, .pd-ses__clock { line-height: 1.4; }
+.pd-ses__s .pd-dg, .pd-ses__clock .pd-dg { height: 1.4em; line-height: 1.4; }
+.pd-ses__s .pd-an, .pd-ses__clock .pd-an { line-height: 1.4; }
+.pd-ses__s .pd-dg__c, .pd-ses__clock .pd-dg__c { height: 1.4em; }
+
+/* ---------- overflow guards ---------- */
+.pd-ent--tiny { -webkit-justify-content: space-between; justify-content: space-between; }
+.pd-ent--tiny .pd-ent__s, .pd-ent--tiny .pd-ent__tv { margin-top: 0; font-size: 11px !important; line-height: 1.2; }
+.pd-ent--tiny .pd-ent__v { overflow: hidden; text-overflow: ellipsis; font-size: 18px !important; }
+.pd-ent--tiny .pd-ent__u { font-size: 10px !important; margin-left: 2px; }
+.pd-ent__tx { overflow: hidden; }
+.pd-ent__v { overflow: hidden; text-overflow: ellipsis; }
+/* quota error / hint lines stay inside the tile: one line in short rows, two otherwise */
+.pd-qerr { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.25; }
+.pd-quota--row .pd-qrow__p { min-width: 0; }
+.pd-quota--short .pd-qerr { -webkit-line-clamp: 1; margin-top: 3px; white-space: normal; }
+.pd-qrow__n { max-width: 48%; }
+.pd-qrow__bar { min-width: 0; } .pd-qrow__n { -webkit-flex: 0 1 auto; flex: 0 1 auto; }
+.pd-page { -webkit-scroll-snap-stop: always; scroll-snap-stop: always; }

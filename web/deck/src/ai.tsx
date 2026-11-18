@@ -575,7 +575,7 @@ export function QuotaWidget(props: AiWidgetProps) {
   const extras = (info && info.extras) || []
   const tw = props.tw
   const th = props.th
-  const pad = tw >= 170 ? 16 : 10
+  const pad = th < 80 ? 7 : tw >= 170 ? 16 : 10
   const tc = props.textColor || undefined
   const showReset = qo.showReset !== false
   // only a 1x1-ish tile drops the header; everything wider shares one structure: header row, chart across the full width, status line
@@ -615,6 +615,25 @@ export function QuotaWidget(props: AiWidgetProps) {
         <div class="pd-qbody pd-qbody--fill" ref={bodyRef}>
           <TallChart {...ci} />
         </div>
+      </div>
+    )
+  }
+
+  // compact row (2x1 on a small phone): mark, full name, a short bar and the percentage, all on one line
+  if (!small && th < 84 && tw >= 120 && wins.length && !needsLogin && chart !== 'rings' && chart !== 'gauge') {
+    const p0 = Math.max(0, wins[0].usedPercent)
+    const sc = STATE_COLOR[stateOf(p0)] || color
+    return (
+      <div class="pd-quota pd-quota--row" style={{ padding: '0 ' + (tw >= 170 ? 14 : 10) + 'px', color: tc }}>
+        {mark(24)}
+        <div class="pd-qrow__n">
+          <b style={{ color: tc }}>{name}</b>
+          {tw >= 240 && plan ? <em class="pd-qplan">{plan}</em> : null}
+        </div>
+        <span class="pd-qrow__bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round(p0))}>
+          <i style={{ width: Math.min(100, p0) + '%', background: sc }} />
+        </span>
+        <span class="pd-qrow__p" style={{ color: sc }}>{Math.round(p0)}%</span>
       </div>
     )
   }
@@ -686,9 +705,9 @@ export function QuotaWidget(props: AiWidgetProps) {
     )
   }
   return (
-    <div class="pd-quota" style={{ padding: pad + 'px', color: tc }}>
+    <div class={'pd-quota' + (th < 100 ? ' pd-quota--short' : '')} style={{ padding: pad + 'px', color: tc }}>
       <div class={'pd-qhead' + (cycling ? ' pd-qhead--cycle' : '')} onClick={cycling ? () => setAccIdx(accIdx + 1) : undefined}>
-        {mark(26)}
+        {mark(tw < 150 ? 20 : 26)}
         <div class="pd-qtitle">
           <b style={{ color: tc }}>
             {name}
