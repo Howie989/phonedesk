@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env*.local
+
+# Local-only tooling and personal project memory
+.knowns/
+.impeccable/
+# Generated at build time
+src/assets.gen.ts
+web/shared/icon-catalog.json
+web/*/dist/
+.mcp.json

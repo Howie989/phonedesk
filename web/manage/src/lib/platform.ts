@@ -1,0 +1,68 @@
+import { useSyncExternalStore } from "react";
+
+/** Platform of the machine the agent runs on (the management page is served from it). */
+export type Platform = "darwin" | "win32" | "linux";
+
+function guess(): Platform {
+  try {
+    const ua = `${navigator.userAgent} ${navigator.platform}`;
+    if (/Win/i.test(ua)) return "win32";
+    if (/Mac/i.test(ua)) return "darwin";
+    if (/Linux|X11/i.test(ua)) return "linux";
+  } catch {
+    /* no navigator (tests) */
+  }
+  return "darwin";
+}
+
+let current: Platform = guess();
+const listeners = new Set<() => void>();
+export const getPlatform = (): Platform => current;
+export function setPlatform(p: Platform): void {
+  if (p === current) return;
+  current = p;
+  listeners.forEach((f) => f());
+}
+/** Accepts what the agent may call it: "win32"/"windows", "darwin"/"macos", "linux". */
+export function asPlatform(v: unknown): Platform | undefined {
+  const s = typeof v === "string" ? v.toLowerCase() : "";
+  if (s === "win32" || s === "windows" || s === "win") return "win32";
+  if (s === "darwin" || s === "macos" || s === "mac") return "darwin";
+  if (s === "linux") return "linux";
+  return undefined;
+}
+export function usePlatform(): Platform {
+  return useSyncExternalStore((cb) => (listeners.add(cb), () => void listeners.delete(cb)), () => current, () => "darwin");
+}
+
+const MAC: Record<string, string> = {
+  cmd: "⌘", command: "⌘", meta: "⌘", win: "⌘", super: "⌘", ctrl: "⌃", control: "⌃", alt: "⌥", option: "⌥", shift: "⇧",
+  return: "↩", enter: "↩", delete: "⌫", forwarddelete: "⌦", escape: "⎋", tab: "⇥", space: "Space",
+  up: "↑", down: "↓", left: "←", right: "→", pageup: "Page Up", pagedown: "Page Down",
+};
+/** On Windows the layout's canonical cmd/command/meta/win all press Ctrl (see the agent's key table). */
+const WIN: Record<string, string> = {
+  cmd: "Ctrl", command: "Ctrl", meta: "Ctrl", win: "Ctrl", super: "Ctrl", ctrl: "Ctrl", control: "Ctrl", alt: "Alt", option: "Alt", shift: "Shift",
+  return: "Enter", enter: "Enter", delete: "Backspace", forwarddelete: "Del", escape: "Esc", tab: "Tab", space: "Space",
+  up: "↑", down: "↓", left: "←", right: "→", pageup: "Page Up", pagedown: "Page Down",
+};
+
+/** Key names to show for a canonical hotkey string ("cmd+shift+4"): ⌘ ⇧ 4 on macOS, Ctrl Shift 4 on Windows. Same-name modifiers collapse. */
+export function hotkeyLabels(keys: string, platform: Platform = getPlatform()): string[] {
+  const table = platform === "darwin" ? MAC : WIN;
+  const out: string[] = [];
+  for (const raw of keys.split("+").map((k) => k.trim()).filter(Boolean)) {
+    const k = raw.toLowerCase();
+    const label = table[k] ?? (/^f\d{1,2}$/.test(k) ? k.toUpperCase() : k.length === 1 ? k.toUpperCase() : raw);
+    if (!out.includes(label)) out.push(label);
+  }
+  return out;
+}
+/** One-line form: "⌘⇧4" on macOS, "Ctrl+Shift+4" on Windows. */
+export function hotkeyText(keys: string, platform: Platform = getPlatform()): string {
+  const l = hotkeyLabels(keys, platform);
+  return platform === "darwin" ? l.map((x) => (x.length === 1 || /^[⌘⌃⌥⇧↩⌫⌦⎋⇥↑↓←→]$/.test(x) ? x : ` ${x} `)).join("").trim() : l.join("+");
+}
+
+/** Hotkeys that exist only on macOS (palette entries are hidden elsewhere). */
+export const MAC_ONLY_ENTRIES = new Set(["k-lock", "k-spot", "k-shot"]);

@@ -1,0 +1,78 @@
+import { expect, test } from "bun:test";
+import { cpuDelta, parseVmStat, readCpuTimes, startStats, type Stats } from "../src/stats.ts";
+
+const VM = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                     6501.
+Pages active:                                 231696.
+Pages inactive:                               228660.
+Pages wired down:                             221612.
+Pages occupied by compressor:                 318255.
+`;
+
+test("parseVmStat sums active + wired + compressor", () => {
+  expect(parseVmStat(VM)).toBe((231696 + 221612 + 318255) * 16384);
+});
+
+test("parseVmStat handles 4k pages and missing compressor", () => {
+  const out = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages active:   10.\nPages wired down:   5.\n";
+  expect(parseVmStat(out)).toBe(15 * 4096);
+});
+
+test("parseVmStat returns undefined on garbage", () => {
+  expect(parseVmStat("")).toBeUndefined();
+  expect(parseVmStat("Pages active: 1.")).toBeUndefined();
+});
+
+test("cpuDelta computes percent", () => {
+  expect(cpuDelta({ idle: 100, total: 200 }, { idle: 150, total: 300 })).toBe(50);
+  expect(cpuDelta({ idle: 0, total: 0 }, { idle: 0, total: 100 })).toBe(100);
+  expect(cpuDelta({ idle: 0, total: 0 }, { idle: 100, total: 100 })).toBe(0);
+});
+
+test("cpuDelta is safe with no elapsed time", () => {
+  expect(cpuDelta({ idle: 5, total: 10 }, { idle: 5, total: 10 })).toBe(0);
+});
+
+test("readCpuTimes sums cores", () => {
+  const t = (user: number, idle: number) => ({ model: "", speed: 0, times: { user, nice: 0, sys: 0, idle, irq: 0 } });
+  expect(readCpuTimes([t(1, 3), t(2, 4)])).toEqual({ idle: 7, total: 10 });
+});
+
+test("startStats ticks and stops", async () => {
+  const seen: Stats[] = [];
+  const stop = startStats((s) => seen.push(s), 50);
+  await Bun.sleep(process.platform === "win32" ? 4000 : 400); // the first Windows sample waits for the PowerShell helper to start
+  stop();
+  const n = seen.length;
+  expect(n).toBeGreaterThanOrEqual(2);
+  const s = seen[n - 1]!;
+  expect(s.cpu).toBeGreaterThanOrEqual(0);
+  expect(s.cpu).toBeLessThanOrEqual(100);
+  expect(s.memTotal).toBeGreaterThan(0);
+  expect(s.memUsed).toBeGreaterThan(0);
+  expect(s.memUsed).toBeLessThanOrEqual(s.memTotal);
+  expect(s.load).toHaveLength(3);
+  expect(s.uptime).toBeGreaterThan(0);
+  await Bun.sleep(200);
+  expect(seen.length).toBe(n);
+}, 15000);
+
+test("LoadEstimator: seeded by the first sample, then exponential decay over 1/5/15 minutes", () => {
+  const { LoadEstimator } = require("../src/stats") as typeof import("../src/stats");
+  const e = new LoadEstimator();
+  expect(e.update(2, 0)).toEqual([2, 2, 2]);
+  const [a, b, c] = e.update(0, 60);
+  expect(a).toBeCloseTo(2 * Math.exp(-1), 5);
+  expect(b).toBeCloseTo(2 * Math.exp(-60 / 300), 5);
+  expect(c).toBeCloseTo(2 * Math.exp(-60 / 900), 5);
+  expect(a).toBeLessThan(b);
+  expect(b).toBeLessThan(c);
+  const same = e.update(4, 0); // no time passed: no change
+  expect(same[0]).toBeCloseTo(a, 9); expect(same[1]).toBeCloseTo(b, 9); expect(same[2]).toBeCloseTo(c, 9);
+});
+
+test("every platform says where its load figure comes from", () => {
+  const { createPlatform } = require("../src/platform") as typeof import("../src/platform");
+  expect(createPlatform("darwin").loadKind).toBe("loadavg");
+  expect(createPlatform("win32").loadKind).toBe("estimate");
+});
