@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
@@ -267,5 +267,144 @@ describe.skipIf(!mac)("uninstall.sh", () => {
     const purge = sh("uninstall.sh", ["--yes", "--purge"], env(home, release));
     expect(purge.exitCode, out(purge)).toBe(0);
     expect(existsSync(join(home, ".phonedesk"))).toBe(false);
+  }, 60_000);
+});
+
+describe.skipIf(!mac)("setup.sh: finding the latest release when GitHub misbehaves", () => {
+  // a local stand-in for github.com + api.github.com + the release downloads
+  function githubStandIn(opts: { failFirst?: number; redirectWorks?: boolean; apiTag?: string | null; status?: number }) {
+    const release = makeRelease({ gz: "good" });
+    let n = 0;
+    const hits: string[] = [];
+    const server = createServer((req, res) => {
+      const url = req.url ?? "";
+      hits.push(`${req.method} ${url}`);
+      if (n++ < (opts.failFirst ?? 0)) { res.writeHead(503).end("busy"); return; }
+      if (url === "/howznguyen/phonedesk/releases/latest") {
+        if (opts.redirectWorks === false) { res.writeHead(opts.status ?? 503).end("no"); return; }
+        res.writeHead(302, { location: "/howznguyen/phonedesk/releases/tag/v9.9.9" }).end(); return;
+      }
+      if (url === "/howznguyen/phonedesk/releases/tag/v9.9.9") { res.writeHead(200).end("page"); return; }
+      if (url === "/repos/howznguyen/phonedesk/releases/latest") {
+        if (opts.apiTag) { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ tag_name: opts.apiTag, name: "x" })); return; }
+        res.writeHead(opts.status ?? 503).end("no"); return;
+      }
+      const m = /^\/howznguyen\/phonedesk\/releases\/download\/v9\.9\.9\/(.+)$/.exec(url);
+      if (m && existsSync(join(release, m[1]!))) { const b = readFileSync(join(release, m[1]!)); res.writeHead(200, { "content-length": b.length }).end(req.method === "HEAD" ? undefined : b); return; }
+      res.writeHead(404).end("no");
+    });
+    return new Promise<{ base: string; hits: string[]; close: () => void }>((ok) => server.listen(0, "127.0.0.1", () => ok({ base: `http://127.0.0.1:${(server.address() as any).port}`, hits, close: () => server.close() })));
+  }
+  const run = async (gh: { base: string }, extra: Record<string, string> = {}, args: string[] = []) => {
+    const home = newHome();
+    const e = { ...env(home, "x"), PHONEDESK_GITHUB_URL: gh.base + "/", PHONEDESK_API_URL: gh.base, PHONEDESK_RETRY_SECONDS: "1", ...extra } as Record<string, string>;
+    delete e.PHONEDESK_RELEASE_BASE;
+    const p = Bun.spawn(["bash", join(root, "setup.sh"), "--yes", "--no-autostart", "--no-start", "--no-open", ...args], { env: e, stdout: "pipe", stderr: "pipe", stdin: new Blob([""]) }); // env: PHONEDESK_INSTALL_HOME (via env()) keeps this in the sandbox
+    const text = (await new Response(p.stdout).text()) + (await new Response(p.stderr).text());
+    return { code: await p.exited, text, home };
+  };
+  test("the redirect lookup answers 5xx for a while: it retries and installs", async () => {
+    const gh = await githubStandIn({ failFirst: 2, apiTag: null });
+    try {
+      const r = await run(gh);
+      expect(r.code, r.text).toBe(0);
+      expect(r.text).toContain("release v9.9.9");
+    } finally { gh.close(); }
+  }, 60_000);
+  test("the redirect keeps failing: it falls back to api.github.com tag_name", async () => {
+    const gh = await githubStandIn({ redirectWorks: false, apiTag: "v9.9.9" });
+    try {
+      const r = await run(gh);
+      expect(r.code, r.text).toBe(0);
+      expect(r.text).toContain("release v9.9.9");
+      expect(gh.hits.some((h) => h.includes("/repos/") && h.includes("/releases/latest"))).toBe(true);
+    } finally { gh.close(); }
+  }, 60_000);
+  test("both fail: the error says what failed and suggests --version / PHONEDESK_VERSION; nothing is installed", async () => {
+    const gh = await githubStandIn({ redirectWorks: false, apiTag: null, status: 404 });
+    try {
+      const r = await run(gh);
+      expect(r.code).not.toBe(0);
+      expect(r.text).toContain("could not reach GitHub to find the latest release");
+      expect(r.text).toContain("--version");
+      expect(r.text).toContain("PHONEDESK_VERSION");
+      expect(r.text).toContain("trying again"); // it did retry
+      expect(existsSync(join(r.home, ".phonedesk", "bin", "phonedesk"))).toBe(false);
+    } finally { gh.close(); }
+  }, 60_000);
+  test("PHONEDESK_VERSION skips the lookup entirely", async () => {
+    const gh = await githubStandIn({ redirectWorks: false, apiTag: null });
+    try {
+      const r = await run(gh, { PHONEDESK_VERSION: "9.9.9" });
+      expect(r.code, r.text).toBe(0);
+      expect(gh.hits.some((h) => h.includes("/releases/latest"))).toBe(false);
+    } finally { gh.close(); }
+  }, 60_000);
+
+});
+
+describe.skipIf(!mac)("setup.sh / uninstall.sh: PATH and the port check", () => {
+  const base = ["--yes", "--no-autostart", "--no-open"];
+  test("PATH: the marked line goes into the shell rc files, once; uninstall removes it and keeps the rest", () => {
+    const home = newHome();
+    writeFileSync(join(home, ".zshrc"), "alias ll='ls -l'\n# phonedesk is great\nexport FOO=1");
+    const rel = makeRelease();
+    for (let i = 0; i < 2; i++) {
+      const r = sh("setup.sh", [...base, "--no-start"], env(home, rel));
+      expect(r.exitCode, out(r)).toBe(0);
+      if (i === 0) expect(out(r)).toMatch(/Open a new terminal, then run: phonedesk doctor[\s\S]*source ~?\/?.*\.zshrc/);
+    }
+    const rc = readFileSync(join(home, ".zshrc"), "utf8");
+    expect(rc.match(/\.phonedesk\/bin:\$PATH" # phonedesk/g)?.length).toBe(1); // idempotent
+    expect(rc).toContain("export FOO=1\nexport PATH="); // newline added before our line
+    const u = sh("uninstall.sh", ["--yes"], env(home, rel));
+    expect(u.exitCode, out(u)).toBe(0);
+    const after = readFileSync(join(home, ".zshrc"), "utf8");
+    expect(after).toBe("alias ll='ls -l'\n# phonedesk is great\nexport FOO=1\n"); // only our line is gone
+    expect(existsSync(join(home, ".zshrc.phonedesk.bak"))).toBe(true);
+  });
+  test("PATH: with ~/.local/bin on PATH a symlink is made (no rc edit); uninstall removes it", () => {
+    const home = newHome();
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    const rel = makeRelease();
+    const e = env(home, rel, { PATH: `${join(home, ".local", "bin")}:${process.env.PATH}` });
+    const r = sh("setup.sh", [...base, "--no-start"], e);
+    expect(r.exitCode, out(r)).toBe(0);
+    expect(readlinkSync(join(home, ".local", "bin", "phonedesk"))).toBe(join(home, ".phonedesk", "bin", "phonedesk"));
+    expect(existsSync(join(home, ".zshrc"))).toBe(false);
+    expect(out(r)).toContain("Run: phonedesk doctor");
+    const u = sh("uninstall.sh", ["--yes"], e);
+    expect(u.exitCode, out(u)).toBe(0);
+    expect(existsSync(join(home, ".local", "bin", "phonedesk"))).toBe(false);
+  });
+  test("--no-path changes nothing", () => {
+    const home = newHome();
+    const r = sh("setup.sh", [...base, "--no-start", "--no-path"], env(home, makeRelease()));
+    expect(r.exitCode, out(r)).toBe(0);
+    expect(existsSync(join(home, ".zshrc"))).toBe(false);
+    expect(existsSync(join(home, ".bash_profile"))).toBe(false);
+  });
+  test("a listener on the port: setup says who holds it and stops before starting anything", async () => {
+    if (Bun.spawnSync(["which", "lsof"], { env: { PATH: process.env.PATH!, HOME: join(sandbox, "fake-home") } }).exitCode !== 0) return; // HOME: sandbox
+    const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const home = newHome();
+      const r = sh("setup.sh", [...base, "--port", String(holder.port)], env(home, makeRelease()));
+      const text = out(r);
+      expect(r.exitCode).not.toBe(0);
+      expect(text).toContain(`port ${holder.port} is already in use by process ${process.pid}`);
+      expect(text).toContain("--port");
+      expect(existsSync(join(home, ".phonedesk", "agent.pid"))).toBe(false);
+    } finally { holder.stop(true); }
+  });
+  test("the health check must be answered by the agent just installed", async () => {
+    const home = newHome();
+    const port = await freePort();
+    const r = sh("setup.sh", [...base, "--port", String(port)], env(home, makeRelease()));
+    const text = out(r);
+    const pid = Number(readFileSync(join(home, ".phonedesk", "agent.pid"), "utf8").trim());
+    if (pid) spawned.push(pid);
+    expect(r.exitCode, text).toBe(0);
+    expect(text).toContain(`running on port ${port}`);
   }, 60_000);
 });

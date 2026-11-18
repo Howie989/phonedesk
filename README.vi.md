@@ -18,7 +18,7 @@ Biến điện thoại hoặc máy tính bảng cũ thành bảng điều khiể
 là một agent nhỏ chạy trên máy tính, phục vụ giao diện cảm ứng cho trình duyệt bất kỳ trong cùng mạng Wi-Fi. Không cần
 cài app trên điện thoại, không cần tài khoản hay dịch vụ đám mây.
 
-> **Trạng thái:** bản đầu (0.x). Hỗ trợ chính là macOS, Windows đang thử nghiệm. Binary chưa ký bằng Developer ID và chưa notarize: xem [Bắt đầu nhanh](#bắt-đầu-nhanh).
+> **Trạng thái:** bản đầu (0.x). Hỗ trợ chính là macOS, Windows đang thử nghiệm. Binary chưa ký bằng Developer ID và chưa notarize: xem [Cài đặt](#cài-đặt).
 
 <p align="center"><img src="docs/images/promo-hero.png" alt="PhoneDesk: điện thoại cũ thành bảng điều khiển cho máy tính"></p>
 
@@ -61,64 +61,88 @@ trợ lý AI sắp xếp layout giúp bạn. Chạy trên macOS, và Windows 10/
 </tr>
 </table>
 
-## Bắt đầu nhanh
+## Cài đặt
 
-Trên Mac (Apple silicon hoặc Intel), chạy lệnh này trong Terminal, không cần `sudo`:
+Bạn cần một **máy Mac** (macOS 13 trở lên) hoặc **PC Windows 10/11**, cùng một **điện thoại hoặc máy tính bảng dùng chung
+Wi-Fi**. Không cần cài gì trên điện thoại. Mất khoảng 2 phút.
+
+### 1. Cài trên máy tính
+
+**Trên Mac**
+
+1. Mở **Terminal**: bấm <kbd>⌘ Command</kbd> + <kbd>Space</kbd>, gõ `Terminal`, bấm <kbd>Return</kbd>.
+2. Sao chép dòng dưới, dán vào Terminal, bấm <kbd>Return</kbd>:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.sh | bash
 ```
 
-Script tải bản phát hành mới nhất, kiểm tra SHA-256 theo `SHA256SUMS` của bản đó (không khớp thì dừng), cài chương trình vào
-`~/.phonedesk/bin/phonedesk`, hỏi có chạy PhoneDesk khi đăng nhập không (dịch vụ launchd), khởi động và in địa chỉ cho
-điện thoại cùng mã PIN. Tùy chọn viết sau `bash -s --`, ví dụ `--yes` (không hỏi), `--no-autostart`, `--no-open`,
-`--port 7421`, `--version 0.2.0`, `--dry-run`.
+**Trên Windows** (thử nghiệm)
 
-- **Cập nhật:** chạy lại đúng lệnh trên. Layout, điện thoại đã ghép đôi và cài đặt trong `~/.phonedesk` được giữ nguyên.
-- **Gỡ cài đặt:**
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.sh | bash
-  ```
-  Lệnh này gỡ dịch vụ, các hook Claude Code / Codex của PhoneDesk (có sao lưu) và chương trình, nhưng giữ dữ liệu của bạn.
-  Thêm `-s -- --purge` sau `bash` để xóa luôn `~/.phonedesk`.
-- **Dịch vụ nền:** `phonedesk service install|uninstall|status|restart`; log ở `~/.phonedesk/logs`.
-- **Chữ ký:** file thực thi được ký ad-hoc, không có Apple Developer ID và chưa được notarize. Script tải bằng `curl` (không có
-  cờ quarantine) và ký lại trên máy bạn nên Gatekeeper không chặn. Nếu tự tải file bằng trình duyệt, macOS có thể từ chối
-  mở: chạy `xattr -d com.apple.quarantine <file>`. Kiểm tra bản đang chạy bằng `phonedesk --version`.
-
-## Ghép đôi điện thoại
-
-Khi khởi động, PhoneDesk in ra địa chỉ cho điện thoại và một mã PIN 6 số. Chọn cách nào tiện nhất:
-
-| Cách | Làm thế nào |
-|---|---|
-| **Quét bằng app Camera** | Đưa camera điện thoại vào mã QR trong terminal (hiện lúc khởi động và ở cuối bộ cài) hoặc trong **Quản lý › Thiết bị**. Link đã kèm PIN nên điện thoại ghép đôi ngay. |
-| **Nút Scan QR trên trang ghép đôi** | Mở địa chỉ cho điện thoại, bấm **Scan QR**. Điện thoại chụp ảnh mã QR trên máy tính rồi tự ghép đôi. Quét camera trực tiếp cần HTTPS nên ở đây dùng ảnh chụp. |
-| **Nhập PIN** | Mở địa chỉ cho điện thoại (ví dụ `http://may-cua-ban.local:7420`) và nhập 6 số. |
-
-Điện thoại được nhớ kể cả khi agent khởi động lại (token lưu trong cookie). Thêm trang vào màn hình chính để chạy toàn
-màn hình. Gỡ điện thoại trong **Quản lý › Thiết bị**.
-
-## Bắt đầu nhanh trên Windows (thử nghiệm)
-
-Hỗ trợ Windows 10/11 (x64) đang ở mức **thử nghiệm**: chưa được kiểm chứng trên mọi cấu hình, nên có thể còn lỗi vặt,
-mong bạn báo lại. Trong PowerShell (không cần quyền quản trị):
+1. Mở **PowerShell**: bấm **Start**, gõ `PowerShell`, bấm <kbd>Enter</kbd> (không cần quyền quản trị).
+2. Sao chép dòng dưới, dán vào PowerShell, bấm <kbd>Enter</kbd>:
 
 ```powershell
 irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.ps1 | iex
 ```
 
-Lệnh này tải `phonedesk-windows-x64.exe`, kiểm tra SHA-256 với `SHA256SUMS` của bản phát hành, cài cho riêng tài khoản của
-bạn, hỏi có chạy PhoneDesk khi đăng nhập không (một tác vụ Task Scheduler theo người dùng, không cần quyền quản trị), khởi
-động và in địa chỉ cho điện thoại cùng mã PIN ghép đôi.
+Bạn sẽ thấy thanh tải, rồi vài dòng `OK`. Cuối cùng PhoneDesk in ra một **mã QR**, một **địa chỉ cho điện thoại**
+(ví dụ `http://may-cua-ban.local:7420`) và một **mã PIN 6 số**. Để nguyên cửa sổ đó cho bước sau.
 
-- **Gỡ cài đặt:** `irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.ps1 | iex` (giữ lại dữ liệu).
-- **Tường lửa:** bộ cài thêm một quy tắc cho `phonedesk.exe`, chỉ trong mạng nội bộ (một lần hỏi UAC), trước lần chạy đầu, nên Windows không chặn điện thoại.
-- **Lỗi đã biết:** gõ chữ từ một ô (và macro có bước gõ chữ) có thể ra sai ký tự trên Windows; mở app, phím tắt, media và âm lượng vẫn chạy. Đang sửa.
-- **SmartScreen:** tệp tải về chưa ký có thể hiện "Windows protected your PC": chọn *More info*, rồi *Run anyway*.
-- **Phím tắt:** trong layout, `cmd` nghĩa là Ctrl trên Windows và `option` nghĩa là Alt. Trang quản lý hiện Ctrl/Alt/Shift
-  trên Windows và ký hiệu Mac trên macOS. Phím tắt cần phím Windows thì không bấm được.
-- Mở tab **Quyền truy cập** của trang quản lý để kiểm tra tường lửa và trình hỗ trợ.
+Từ giờ PhoneDesk tự chạy mỗi khi bạn đăng nhập, và lệnh `phonedesk` dùng được trong mọi cửa sổ terminal mới.
+
+### 2. Mở trên điện thoại
+
+- **Dễ nhất:** mở **Camera** của điện thoại, hướng vào mã QR trên máy tính, rồi chạm vào đường link hiện ra.
+- **Hoặc** gõ địa chỉ vào trình duyệt của điện thoại rồi nhập mã PIN.
+
+Điện thoại sẽ được nhớ, nên chỉ cần làm một lần. Muốn chạy toàn màn hình thì thêm ra màn hình chính:
+
+- **iPhone (Safari):** bấm **Chia sẻ** → **Thêm vào MH chính**.
+- **Android (Chrome):** bấm **⋮** → **Thêm vào màn hình chính**.
+
+### 3. Tùy biến
+
+Trên máy tính, mở **http://localhost:7420/manage/** trong trình duyệt. Kéo app, phím tắt và widget vào khung điện thoại,
+rồi bấm **Save**. Điện thoại cập nhật ngay.
+
+Lần đầu một phím gửi phím tắt, macOS sẽ hỏi quyền **Trợ năng (Accessibility)**: hãy cho phép (Cài đặt hệ thống → Quyền riêng
+tư & Bảo mật → Trợ năng). Windows hỏi một lần cho PhoneDesk dùng mạng: hãy cho phép.
+
+### Gặp trục trặc?
+
+| Vấn đề | Cách xử lý |
+|---|---|
+| Điện thoại không mở được địa chỉ | Kiểm tra điện thoại và máy tính dùng **chung Wi-Fi**. Trên Windows, cho phép PhoneDesk khi tường lửa hỏi. Thử địa chỉ dạng số mà bộ cài in ra (`http://192.168…:7420`). |
+| `could not reach GitHub` hoặc `error: 503` | GitHub trục trặc tạm thời. Chờ vài giây rồi chạy lại đúng dòng lệnh đó. |
+| Tải chậm | File khoảng 20 MB (Windows 40 MB). Cứ để chạy, thanh tải cho thấy tiến độ. |
+| `phonedesk: command not found` | Mở một cửa sổ terminal **mới**. |
+| Bấm phím trên Mac không có tác dụng | Cho phép **Trợ năng** cho PhoneDesk, rồi chạy `phonedesk doctor` để xem còn thiếu gì. |
+| `port 7420 is in use` | Có chương trình khác đang dùng cổng đó. Chạy lại bộ cài với `--port 7421` (Mac: `… \| bash -s -- --port 7421`). |
+
+### Cập nhật hoặc gỡ
+
+- **Cập nhật:** chạy lại đúng dòng lệnh cài. Layout và điện thoại đã ghép đôi vẫn giữ nguyên.
+- **Gỡ (Mac):** `curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.sh | bash`. Dữ liệu được giữ lại; thêm `-s -- --purge` sau `bash` để xóa luôn.
+- **Gỡ (Windows):** `irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.ps1 | iex`.
+
+<details>
+<summary>Tùy chọn khác và chi tiết bộ cài</summary>
+
+- Bộ cài tải đúng file từ [bản phát hành mới nhất](https://github.com/howznguyen/phonedesk/releases/latest), kiểm tra SHA-256
+  với `SHA256SUMS` (sai là dừng), cài cho riêng người dùng của bạn (không cần `sudo` hay quyền quản trị), tự chạy khi đăng
+  nhập (launchd trên macOS, Task Scheduler trên Windows) và thêm vào PATH.
+- Tùy chọn trên Mac đặt sau `bash -s --`: `--yes` (không hỏi), `--version 0.1.1`, `--port 7421`, `--no-autostart`,
+  `--no-open`, `--no-path`, `--dry-run`. Trên Windows đặt biến môi trường trước dòng lệnh, ví dụ
+  `$env:PHONEDESK_PORT=7421; irm … | iex` (xem đầu file [setup.ps1](setup.ps1)).
+- Vị trí file: chương trình ở `~/.phonedesk/bin/phonedesk` (macOS) và `%LOCALAPPDATA%\PhoneDesk\bin\phonedesk.exe` (Windows);
+  dữ liệu ở `~/.phonedesk`; log ở `~/.phonedesk/logs`.
+- Dịch vụ nền: `phonedesk service install|uninstall|status|restart`.
+- Chữ ký: file thực thi chỉ ký ad-hoc, chưa có Apple Developer ID hay chứng chỉ Windows. Bộ cài đã xử lý chuyện này; nếu tự tải
+  bằng trình duyệt thì trên macOS cần `xattr -d com.apple.quarantine <file>`, trên Windows chọn "More info → Run anyway".
+- Lỗi đã biết trên Windows: phím gõ chữ có thể ra sai ký tự. Mở app, phím tắt, media và âm lượng vẫn chạy bình thường.
+
+</details>
 
 ## Cài từ mã nguồn
 

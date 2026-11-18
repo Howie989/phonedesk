@@ -20,6 +20,7 @@
 #
 # Test knobs (not for normal use):
 #   PHONEDESK_RELEASE_BASE   a folder or URL that holds phonedesk-windows-x64.exe and SHA256SUMS
+#   PHONEDESK_GITHUB_URL / PHONEDESK_API_URL   where the "latest release" lookup goes (a local server in tests); PHONEDESK_RETRY_SECONDS scales the pause between rounds
 #   PHONEDESK_INSTALL_HOME   install under this folder instead of %LOCALAPPDATA% / %USERPROFILE%
 
 function Install-PhoneDesk {
@@ -131,19 +132,39 @@ function Install-PhoneDesk {
       $custom = $true
       Info "using PHONEDESK_RELEASE_BASE=$base"
     } else {
+      $ghUrl = if ($env:PHONEDESK_GITHUB_URL) { $env:PHONEDESK_GITHUB_URL.TrimEnd('/') } else { 'https://github.com' }
+      if ($env:PHONEDESK_GITHUB_URL) { $custom = $true }
       if (-not $Version) {
-        try {
-          $req = [Net.HttpWebRequest]::Create("https://github.com/$repo/releases/latest")
-          $req.Method = 'HEAD'; $req.UserAgent = 'phonedesk-setup'
-          $resp = $req.GetResponse()
-          $tag = ($resp.ResponseUri.AbsoluteUri -split '/tag/')[1]
-          $resp.Close()
-        } catch { $tag = $null }
-        if (-not $tag) { Die "could not find the latest release of $repo (is there a release yet, and are you online?)" }
+        # GitHub answers 5xx now and then: try the redirect lookup, then the API, up to 4 rounds with a growing pause, and say what failed.
+        # Test knobs: PHONEDESK_GITHUB_URL / PHONEDESK_API_URL point the lookup at a local server; PHONEDESK_RETRY_SECONDS scales the pause.
+        $apiUrl = if ($env:PHONEDESK_API_URL) { $env:PHONEDESK_API_URL.TrimEnd('/') } else { 'https://api.github.com' }
+        $pause = if ($env:PHONEDESK_RETRY_SECONDS) { [int]$env:PHONEDESK_RETRY_SECONDS } else { 2 }
+        $tag = $null; $why = ''
+        for ($attempt = 1; $attempt -le 4 -and -not $tag; $attempt++) {
+          try {
+            $req = [Net.HttpWebRequest]::Create("$ghUrl/$repo/releases/latest")
+            $req.Method = 'HEAD'; $req.UserAgent = 'phonedesk-setup'; $req.Timeout = 15000
+            $resp = $req.GetResponse()
+            $tag = ($resp.ResponseUri.AbsoluteUri -split '/tag/')[1]
+            $resp.Close()
+          } catch { $why = "github.com: $($_.Exception.Message)"; $tag = $null }
+          if (-not $tag) {
+            try {
+              $rq = [Net.HttpWebRequest]::Create("$apiUrl/repos/$repo/releases/latest")
+              $rq.UserAgent = 'phonedesk-setup'; $rq.Accept = 'application/vnd.github+json'; $rq.Timeout = 15000
+              $rs = $rq.GetResponse()
+              $sr = New-Object IO.StreamReader($rs.GetResponseStream())
+              try { $tag = [string](($sr.ReadToEnd() | ConvertFrom-Json).tag_name) } finally { $sr.Dispose(); $rs.Close() }
+              if (-not $tag) { $tag = $null }
+            } catch { $why = "$why; api.github.com: $($_.Exception.Message)"; $tag = $null }
+          }
+          if (-not $tag -and $attempt -lt 4) { Info "GitHub did not answer ($why), trying again..."; Start-Sleep -Seconds ($attempt * $pause) }
+        }
+        if (-not $tag) { Die "could not reach GitHub to find the latest release of $repo ($why). Check your connection and run the command again, or pick a version with `$env:PHONEDESK_VERSION='0.1.1'" }
       } else {
         $tag = 'v' + $Version.TrimStart('v')
       }
-      $base = "https://github.com/$repo/releases/download/$tag"
+      $base = "$ghUrl/$repo/releases/download/$tag"
       Info "release $tag"
     }
 
@@ -151,7 +172,10 @@ function Install-PhoneDesk {
     function Fetch([string]$src, [string]$dest) {
       if ($src -match '^https?://') {
         if (-not $custom -and $src -notmatch '^https://') { throw 'refusing a non-https download' }
-        Invoke-WebRequest -Uri $src -OutFile $dest -UseBasicParsing -UserAgent 'phonedesk-setup'
+        for ($try = 1; $try -le 3; $try++) {
+          try { Invoke-WebRequest -Uri $src -OutFile $dest -UseBasicParsing -UserAgent 'phonedesk-setup'; break }
+          catch { if ($try -ge 3 -or $_.Exception.Message -match '404|Not Found') { throw }; Start-Sleep -Seconds 2 }
+        }
       } else {
         if (-not (Test-Path -LiteralPath $src)) { throw "not found: $src" }
         Copy-Item -LiteralPath $src -Destination $dest
@@ -296,11 +320,12 @@ function Install-PhoneDesk {
       $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
       $parts = @($userPath -split ';' | Where-Object { $_ })
       if ($parts -notcontains $binDir) {
-        if (Ask 'Add PhoneDesk to your PATH (so you can run `phonedesk` in any terminal)?' $true) {
-          [Environment]::SetEnvironmentVariable('Path', (($parts + $binDir) -join ';'), 'User')
-          Ok 'added to your PATH (open a new terminal to use it)'
-        }
-      }
+        # automatic (opt out with PHONEDESK_NO_PATH=1); SetEnvironmentVariable writes HKCU\Environment and broadcasts WM_SETTINGCHANGE
+        [Environment]::SetEnvironmentVariable('Path', (($parts + $binDir) -join ';'), 'User')
+        $pathAdded = $true
+        Ok 'added PhoneDesk to your PATH'
+      } else { $pathAdded = $true; Info 'PhoneDesk is already on your PATH' }
+      if ($env:Path -notlike "*$binDir*") { $env:Path = "$env:Path;$binDir" } # this PowerShell window too
     }
 
     # ---------- 5. firewall (the one step that needs administrator rights) ----------
@@ -332,6 +357,16 @@ function Install-PhoneDesk {
     }
 
     # ---------- 6. start ----------
+    if (-not $NoStart) {
+      # something else already listening on the port would answer the health check below: stop here and say who
+      $holder = $null
+      try { $holder = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -First 1 } catch { }
+      if ($holder) {
+        $hp = $null; try { $hp = Get-Process -Id $holder.OwningProcess -ErrorAction Stop } catch { }
+        $who = if ($hp) { "$($hp.ProcessName) (pid $($hp.Id)$(if ($hp.Path) { ', ' + $hp.Path }))" } else { "process $($holder.OwningProcess)" }
+        Die "port $Port is already in use by $who. Stop it (Stop-Process -Id $($holder.OwningProcess)) or install on another port (`$env:PHONEDESK_PORT=7421). PhoneDesk is installed at $exe; nothing was started."
+      }
+    }
     if ($autostart) {
       Step 'Setting up the background service'
       $svcArgs = @('service', 'install')
@@ -363,6 +398,21 @@ function Install-PhoneDesk {
         try { $pairing = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/pairing" -Headers @{ 'x-phonedesk' = '1' } -TimeoutSec 2; break } catch { Start-Sleep -Milliseconds 500 }
       }
       if (-not $pairing) { Die "PhoneDesk did not answer on port $Port. Look at $logDir\agent.err.log" }
+      # the answer could come from ANOTHER process on that port: it must be the agent just installed
+      $gotLine = $null
+      for ($i = 0; $i -lt 20; $i++) {
+        try {
+          $ab = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/about" -Headers @{ 'x-phonedesk' = '1' } -TimeoutSec 2
+          $gotLine = "phonedesk $($ab.version)"
+          if ($ab.commit) { $gotLine += " ($($ab.commit)$(if ($ab.dirty) { '-dirty' }))" }
+        } catch { $gotLine = $null }
+        if ($gotLine -eq $newVersion) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      if ($gotLine -ne $newVersion) {
+        $tail = ''; try { $tail = ((Get-Content -LiteralPath (Join-Path $logDir 'agent.err.log') -Tail 8 -ErrorAction Stop) -join [Environment]::NewLine) } catch { }
+        Die "the agent answering on port $Port is not the one just installed (it reports '$gotLine', installed: '$newVersion'). Another PhoneDesk is probably holding the port: stop it, or use another port. Log tail ($logDir\agent.err.log):$([Environment]::NewLine)$tail"
+      }
       Ok "running on port $Port"
       Write-Host ''
       Write-Host "  Phone URL:   $($pairing.url)"
@@ -378,6 +428,7 @@ function Install-PhoneDesk {
       Info "Installed. Start it with: $exe"
     }
     Step 'Done'
+    if ($pathAdded) { Info 'Open a new terminal, then run: phonedesk doctor   (this window already has it)' }
     Info 'Check permissions and the firewall any time with: phonedesk doctor'
     Info 'Update: run the same install command again.  Remove: uninstall.ps1 (see the README).'
   } finally {

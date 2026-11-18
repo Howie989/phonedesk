@@ -14,16 +14,19 @@
 #   --no-autostart      do not start PhoneDesk at login (no launchd service)
 #   --no-start          install only; do not start the agent
 #   --no-open           do not open the management page in the browser
+#   --no-path           do not put `phonedesk` on your PATH (default: a symlink in ~/.local/bin when that is on PATH,
+#                       else one marked line in ~/.zshrc / ~/.bash_profile)
 #   --dry-run           download and verify, show what would happen, change nothing
 #   -h, --help          this text
 #
 # Test knobs (not for normal use):
+#   PHONEDESK_GITHUB_URL / PHONEDESK_API_URL   where the "latest release" lookup goes (a local server in tests); PHONEDESK_RETRY_SECONDS scales the pause
 #   PHONEDESK_RELEASE_BASE   a directory or URL that holds phonedesk-darwin-<arch> and SHA256SUMS
 #   PHONEDESK_INSTALL_HOME   install under this directory instead of $HOME
 set -euo pipefail
 
 repo="howznguyen/phonedesk"
-yes=0; version=""; port=7420; autostart=1; start=1; open_page=1; dry=0
+yes=0; version="${PHONEDESK_VERSION:-}"; version="${version#v}"; port=7420; autostart=1; start=1; open_page=1; dry=0; add_path=1
 tmp=""
 
 if [ -t 1 ]; then c_step=$'\033[36m'; c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_off=$'\033[0m'
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --no-autostart) autostart=0 ;;
     --no-start) start=0 ;;
     --no-open) open_page=0 ;;
+    --no-path) add_path=0 ;;
     --version) shift; [ $# -gt 0 ] || die "--version needs a value"; version="${1#v}" ;;
     --version=*) version="${1#--version=}"; version="${version#v}" ;;
     --port) shift; [ $# -gt 0 ] || die "--port needs a value"; port="$1" ;;
@@ -109,8 +113,8 @@ fetch() {
   case "$src" in
     http://*|https://*)
       have curl || die "curl is required"
-      if [ "$base_is_custom" = 1 ]; then curl -fsSL --retry 2 --proto '=http,https' -A phonedesk-setup -o "$dest" "$src" || return 1
-      else curl -fsSL --retry 3 --proto '=https' --proto-redir '=https' -A phonedesk-setup -o "$dest" "$src" || return 1; fi ;;
+      if [ "$base_is_custom" = 1 ]; then curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=http,https' -A phonedesk-setup -o "$dest" "$src" || return 1
+      else curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --proto-redir '=https' -A phonedesk-setup -o "$dest" "$src" || return 1; fi ;;
     *) [ -f "$src" ] || return 1; cp "$src" "$dest" ;;
   esac
 }
@@ -144,7 +148,7 @@ fetch_big() {
   if [ "$base_is_custom" = 1 ]; then proto=(--proto '=http,https'); else proto=(--proto '=https' --proto-redir '=https'); fi
   while [ "$i" -lt 5 ]; do
     code=0
-    curl -fL "$quiet" "${proto[@]}" -A phonedesk-setup --speed-limit 1024 --speed-time "${PHONEDESK_STALL_SECONDS:-60}" -C - -o "$dest" "$src" || code=$?
+    curl -fL "$quiet" "${proto[@]}" -A phonedesk-setup --retry 3 --retry-delay 2 --speed-limit 1024 --speed-time "${PHONEDESK_STALL_SECONDS:-60}" -C - -o "$dest" "$src" || code=$?
     [ "$code" = 0 ] && return 0
     i=$((i + 1))
     if [ "$code" = 28 ]; then caution "no data for ${PHONEDESK_STALL_SECONDS:-60} s (a slow or blocked connection to GitHub); continuing where it stopped ($i/5)";
@@ -170,6 +174,65 @@ if [ -n "${PHONEDESK_INSTALL_HOME:-}" ]; then
 fi
 run_bin() { env "${child_env[@]}" "$@"; }
 
+# ---------- helpers: PATH and port ----------
+PATH_MARK='# phonedesk'
+path_line='export PATH="$HOME/.phonedesk/bin:$PATH" # phonedesk'
+path_how=""      # what we did, for the final output: symlink | rc
+path_rc_files="" # the rc files we touched or found already set up
+
+# Makes `phonedesk` available: a symlink in ~/.local/bin when that directory is on PATH, else the marked export line in
+# ~/.zshrc and ~/.bash_profile (whichever of them exists; the one for $SHELL is created when neither does). Idempotent.
+add_to_path() {
+  local local_bin="$home_dir/.local/bin" target f shell_name
+  case ":$PATH:" in
+    *":$local_bin:"*)
+      if [ -d "$local_bin" ] && { [ ! -e "$local_bin/phonedesk" ] || [ -L "$local_bin/phonedesk" ]; }; then
+        target="$(readlink "$local_bin/phonedesk" 2>/dev/null || true)"
+        if [ "$target" != "$bin" ]; then ln -sf "$bin" "$local_bin/phonedesk"; fi
+        ok "phonedesk is on your PATH ($local_bin/phonedesk -> $bin)"
+        path_how=symlink; return 0
+      fi ;;
+  esac
+  shell_name="$(basename "${SHELL:-/bin/zsh}")"
+  local files=()
+  [ -f "$home_dir/.zshrc" ] && files+=("$home_dir/.zshrc")
+  [ -f "$home_dir/.bash_profile" ] && files+=("$home_dir/.bash_profile")
+  if [ "${#files[@]}" = 0 ]; then
+    if [ "$shell_name" = bash ]; then files+=("$home_dir/.bash_profile"); else files+=("$home_dir/.zshrc"); fi
+  fi
+  for f in "${files[@]}"; do
+    if grep -qF "$PATH_MARK" "$f" 2>/dev/null && grep -F "$PATH_MARK" "$f" | grep -qF ".phonedesk/bin"; then
+      info "$f already has the PhoneDesk PATH line"
+    else
+      [ -s "$f" ] && [ "$(tail -c1 "$f" | wc -l | tr -d " ")" = 0 ] && printf '\n' >>"$f"
+      printf '%s\n' "$path_line" >>"$f"
+      ok "added the PATH line to $f"
+    fi
+    path_rc_files="$path_rc_files $f"
+  done
+  path_how=rc
+}
+
+# Who listens on a TCP port on this machine: prints "pid<TAB>command line", nothing when the port is free or lsof is missing.
+port_holder() {
+  local p="$1" pid
+  have lsof || return 0
+  pid="$(lsof -nP -iTCP:"$p" -sTCP:LISTEN -t 2>/dev/null | head -n 1)"
+  [ -n "$pid" ] || return 0
+  printf '%s\t%s\n' "$pid" "$(ps -p "$pid" -o command= 2>/dev/null | cut -c1-120)"
+}
+
+# Short "phonedesk 0.1.1 (abc1234)" of the agent answering on the port, from /api/about; empty when it does not answer.
+agent_version_line() {
+  local j ver commit dirty
+  j="$(curl -fsS --max-time 2 "http://127.0.0.1:$1/api/about" 2>/dev/null)" || return 0
+  ver="$(printf '%s' "$j" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  commit="$(printf '%s' "$j" | sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  dirty="$(printf '%s' "$j" | sed -n 's/.*"dirty"[[:space:]]*:[[:space:]]*\(true\).*/-dirty/p')"
+  [ -n "$ver" ] || return 0
+  if [ -n "$commit" ]; then printf 'phonedesk %s (%s%s)' "$ver" "$commit" "$dirty"; else printf 'phonedesk %s' "$ver"; fi
+}
+
 # ---------- 1. this computer ----------
 step "Checking this computer"
 [ "$(uname -s)" = "Darwin" ] || die "PhoneDesk's installer supports macOS only for now (this is $(uname -s))."
@@ -192,23 +255,28 @@ if [ -n "${PHONEDESK_RELEASE_BASE:-}" ]; then
   base="${PHONEDESK_RELEASE_BASE%/}"; base_is_custom=1
   info "using PHONEDESK_RELEASE_BASE=$base"
 else
+  gh_url="${PHONEDESK_GITHUB_URL:-https://github.com}"; api_url="${PHONEDESK_API_URL:-https://api.github.com}"
+  gh_url="${gh_url%/}"; api_url="${api_url%/}"
+  if [ -n "${PHONEDESK_GITHUB_URL:-}" ]; then base_is_custom=1; fi
   if [ -z "$version" ]; then
     have curl || die "curl is required"
     # GitHub answers 5xx now and then: retry the redirect lookup, then fall back to the API, and say what failed.
     tag=""; why=""
+    # test knobs: PHONEDESK_GITHUB_URL / PHONEDESK_API_URL point the lookup at a local server (then plain http is allowed)
+    lookup_proto=(--proto '=https' --proto-redir '=https'); if [ -n "${PHONEDESK_GITHUB_URL:-}${PHONEDESK_API_URL:-}" ]; then lookup_proto=(--proto '=http,https'); fi
     for attempt in 1 2 3 4; do
-      tag="$(curl -fsSLI --retry 2 --retry-delay 2 --connect-timeout 15 --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" 2>"$tmp/latest.err" | sed -n 's#.*/tag/##p')" || tag=""
+      tag="$(curl -fsSLI --retry 2 --retry-delay "${PHONEDESK_RETRY_SECONDS:-2}" --connect-timeout 15 "${lookup_proto[@]}" -o /dev/null -w '%{url_effective}' "$gh_url/$repo/releases/latest" 2>"$tmp/latest.err" | sed -n 's#.*/tag/##p')" || tag=""
       [ -n "$tag" ] && break
-      tag="$(curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 15 --proto '=https' -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/releases/latest" 2>>"$tmp/latest.err" | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
+      tag="$(curl -fsSL --retry 2 --retry-delay "${PHONEDESK_RETRY_SECONDS:-2}" --connect-timeout 15 "${lookup_proto[@]}" -H 'Accept: application/vnd.github+json' "$api_url/repos/$repo/releases/latest" 2>>"$tmp/latest.err" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
       [ -n "$tag" ] && break
       why="$(tr '\n' ' ' <"$tmp/latest.err" | sed 's/  */ /g')"
-      [ "$attempt" -lt 4 ] && { info "GitHub did not answer (${why:-no response}), trying again…"; sleep $((attempt * 3)); }
+      [ "$attempt" -lt 4 ] && { info "GitHub did not answer (${why:-no response}), trying again…"; sleep $((attempt * ${PHONEDESK_RETRY_SECONDS:-2})); }
     done
-    [ -n "$tag" ] || die "could not reach GitHub to find the latest release of $repo (${why:-no response}). Check your connection and run the command again, or pick a version with --version 0.1.1"
+    [ -n "$tag" ] || die "could not reach GitHub to find the latest release of $repo (${why:-no response}). Check your connection and run the command again, or pick a version with --version 0.1.1 (or PHONEDESK_VERSION=0.1.1)"
   else
     tag="v$version"
   fi
-  base="https://github.com/$repo/releases/download/$tag"
+  base="$gh_url/$repo/releases/download/$tag"
   info "release $tag"
 fi
 
@@ -278,8 +346,16 @@ cp "$tmp/$asset" "$bin_dir/.phonedesk.new"
 chmod 755 "$bin_dir/.phonedesk.new"
 mv -f "$bin_dir/.phonedesk.new" "$bin"  # atomic replace on the same volume
 ok "installed $new_version"
+if [ "$add_path" = 1 ]; then add_to_path; fi
 
 # ---------- 5. start ----------
+if [ "$start" = 1 ]; then
+  holder="$(port_holder "$port")"
+  if [ -n "$holder" ]; then
+    holder_pid="${holder%%$'\t'*}"; holder_cmd="${holder#*$'\t'}"
+    die "port $port is already in use by process $holder_pid ($holder_cmd). Stop it with: kill $holder_pid   (or install on another port: --port 7421). The program is installed at $bin; nothing was started."
+  fi
+fi
 if [ "$autostart" = 1 ] && [ "$start" = 1 ]; then
   step "Setting up the background service"
   if run_bin "$bin" service install --port "$port"; then
@@ -309,6 +385,18 @@ if [ "$start" = 1 ]; then
     info_json=""; sleep 0.5
   done
   [ -n "$info_json" ] || die "PhoneDesk did not answer on port $port. Look at $log_dir/agent.err.log"
+  # the health check could be answered by ANOTHER process on that port: make sure it is the agent just installed
+  want_line="$new_version"; got_line=""
+  for _ in $(seq 1 20); do
+    got_line="$(agent_version_line "$port")"
+    [ "$got_line" = "$want_line" ] && break
+    sleep 0.5
+  done
+  if [ "$got_line" != "$want_line" ]; then
+    log_tail="$(tail -n 8 "$log_dir/agent.err.log" 2>/dev/null | sed 's/^/        /' || true)"
+    die "the agent answering on port $port is not the one just installed (it reports \"${got_line:-nothing}\", installed: \"$want_line\"). Another PhoneDesk is probably holding the port: stop it, or use --port. Log tail ($log_dir/agent.err.log):
+$log_tail"
+  fi
   pin="$(printf '%s' "$info_json" | sed -n 's/.*"pin"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]*\)"\{0,1\}.*/\1/p')"
   url="$(printf '%s' "$info_json" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   url_local="$(printf '%s' "$info_json" | sed -n 's/.*"urlLocal"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
@@ -323,4 +411,13 @@ else
   info "Installed. Start it with: $bin"
 fi
 step "Done"
+if [ "$add_path" = 1 ] && [ "$path_how" = rc ]; then
+  rc_main="${path_rc_files# }"; rc_main="${rc_main%% *}"
+  info "Open a new terminal, then run: phonedesk doctor"
+  info "To use it in THIS terminal right now: source ${rc_main/#$home_dir/~}   (or: export PATH=\"\$HOME/.phonedesk/bin:\$PATH\")"
+elif [ "$add_path" = 1 ] && [ "$path_how" = symlink ]; then
+  info "Run: phonedesk doctor   (it is on your PATH already)"
+else
+  info "Run: $bin doctor"
+fi
 info "Update: run the same install command again.  Remove: uninstall.sh (see the README)."

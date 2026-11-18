@@ -76,7 +76,7 @@ case "$data_dir" in */.phonedesk) ;; *) die "refusing to work on $data_dir" ;; e
 step "PhoneDesk will remove"
 info "the background service (dev.phonedesk.agent)"
 info "PhoneDesk's hooks in Claude Code and Codex (backups: <file>.phonedesk.bak)"
-info "the program: $bin_dir"
+info "the program: $bin_dir, and the PATH entries PhoneDesk added (~/.local/bin/phonedesk symlink, the '# phonedesk' line in ~/.zshrc / ~/.bash_profile)"
 if [ "$purge" = 1 ]; then info "ALL your data: $data_dir (layout, paired phones, icons, sounds, settings)"; else info "(your data in $data_dir stays; use --purge to delete it too)"; fi
 if [ "$dry" = 1 ]; then caution "dry run: nothing was changed"; exit 0; fi
 ask "Continue?" y || die "cancelled; nothing was removed"
@@ -105,6 +105,25 @@ if [ -x "$bin" ]; then
 else
   caution "the program is missing, so the hooks cannot be removed automatically: delete entries ending in '# phonedesk hook' from ~/.claude/settings.json and ~/.codex/hooks.json"
 fi
+
+step "Removing the PATH entries"
+removed_any=0
+if [ -L "$home_dir/.local/bin/phonedesk" ] && [ "$(readlink "$home_dir/.local/bin/phonedesk")" = "$bin" ]; then rm -f "$home_dir/.local/bin/phonedesk"; ok "removed the symlink $home_dir/.local/bin/phonedesk"; removed_any=1; fi
+for f in "$home_dir/.zshrc" "$home_dir/.bash_profile"; do
+  [ -f "$f" ] || continue
+  if grep -F '# phonedesk' "$f" | grep -qF '.phonedesk/bin'; then
+    cp "$f" "$f.phonedesk.bak"
+    # only lines that carry our marker AND point at .phonedesk/bin
+    grep -vF '# phonedesk' "$f" >"$f.phonedesk.tmp" || true
+    grep -F '# phonedesk' "$f" | grep -vF '.phonedesk/bin' >>"$f.phonedesk.tmp" || true
+    awk 'BEGIN{ } { print }' "$f.phonedesk.tmp" >/dev/null
+    # keep every other line in its place: filter instead of reordering
+    awk '{ if (index($0, "# phonedesk") && index($0, ".phonedesk/bin")) next; print }' "$f" >"$f.phonedesk.tmp"
+    cat "$f.phonedesk.tmp" >"$f"; rm -f "$f.phonedesk.tmp"
+    ok "removed the PhoneDesk PATH line from $f (backup: $f.phonedesk.bak)"; removed_any=1
+  fi
+done
+[ "$removed_any" = 1 ] || info "no PATH entries found"
 
 step "Removing the program"
 if [ -d "$bin_dir" ]; then rm -rf "$bin_dir"; ok "removed $bin_dir"; else info "$bin_dir not found"; fi

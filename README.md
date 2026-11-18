@@ -18,7 +18,7 @@ Turn an old phone or tablet into a Stream Deck-style control panel and dashboard
 agent that runs on your computer and serves a touch overlay to any browser on the same Wi-Fi. There is no app to
 install on the phone and no account or cloud service.
 
-> **Status:** early (0.x). macOS is the main target, Windows is experimental. Builds are not signed with a Developer ID or notarized: see [Quick start](#quick-start).
+> **Status:** early (0.x). macOS is the main target, Windows is experimental. Builds are not signed with a Developer ID or notarized: see [Install](#install).
 
 <p align="center"><img src="docs/images/promo-hero.png" alt="PhoneDesk: your old phone, a control panel for your computer"></p>
 
@@ -61,65 +61,89 @@ An MCP server lets an AI assistant arrange the layout for you. Runs on macOS, an
 </tr>
 </table>
 
-## Quick start
+## Install
 
-On a Mac (Apple silicon or Intel), run this in Terminal. It needs no `sudo`:
+You need a **Mac** (macOS 13 or later) or a **Windows 10/11 PC**, and a **phone or tablet on the same Wi-Fi**. Nothing
+is installed on the phone. It takes about 2 minutes.
+
+### 1. Install on the computer
+
+**On a Mac**
+
+1. Open **Terminal**: press <kbd>⌘ Command</kbd> + <kbd>Space</kbd>, type `Terminal`, press <kbd>Return</kbd>.
+2. Copy this line, paste it into Terminal, press <kbd>Return</kbd>:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.sh | bash
 ```
 
-It downloads the latest release, checks its SHA-256 against the release's `SHA256SUMS` (and refuses on a mismatch),
-installs the program to `~/.phonedesk/bin/phonedesk`, offers to start PhoneDesk at login (a launchd service), starts it,
-and prints the phone URL and pairing PIN. Options go after `bash -s --`, for example `--yes` (no questions),
-`--no-autostart`, `--no-open`, `--port 7421`, `--version 0.2.0`, `--dry-run`.
+**On Windows** (experimental)
 
-- **Update:** run the same command again. Your layout, paired phones and settings in `~/.phonedesk` are kept.
-- **Uninstall:**
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.sh | bash
-  ```
-  This removes the service, PhoneDesk's Claude Code / Codex hooks (with a backup) and the program, and keeps your data.
-  Add `-s -- --purge` after `bash` to delete `~/.phonedesk` as well.
-- **Background service:** `phonedesk service install|uninstall|status|restart`; logs are in `~/.phonedesk/logs`.
-- **Signing:** the binaries are signed ad hoc, not with an Apple Developer ID, and are not notarized. The installer
-  downloads with `curl` (no quarantine flag) and signs the file again on your Mac, so Gatekeeper does not block it. If you
-  download a binary in a browser instead, macOS may refuse to open it: run `xattr -d com.apple.quarantine <file>`.
-  Check what you are running with `phonedesk --version`.
-
-## Pair your phone
-
-PhoneDesk prints a phone URL and a 6-digit PIN when it starts. Use whichever is easiest:
-
-| Way | How |
-|---|---|
-| **Scan with the Camera app** | Point the phone's Camera at the QR code in the terminal (shown at start and at the end of the installer) or in **Manage › Devices**. The link carries the PIN, so the phone pairs right away. |
-| **Scan QR on the pairing page** | Open the phone URL and tap **Scan QR**. The phone takes a photo of the QR on your computer and pairs. Live camera scanning needs HTTPS, so this uses a photo instead. |
-| **Type the PIN** | Open the phone URL (for example `http://your-mac.local:7420`) and enter the 6 digits. |
-
-The phone stays paired across restarts (the token is kept in a cookie). Add the page to the home screen for a full-screen
-panel. Remove a phone in **Manage › Devices**.
-
-## Windows quick start (experimental)
-
-Windows 10/11 (x64) support is **experimental**: it has not been verified on every setup yet, so expect rough edges and
-please report them. In PowerShell (no administrator needed):
+1. Open **PowerShell**: click **Start**, type `PowerShell`, press <kbd>Enter</kbd> (no administrator needed).
+2. Copy this line, paste it into PowerShell, press <kbd>Enter</kbd>:
 
 ```powershell
 irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/setup.ps1 | iex
 ```
 
-It downloads `phonedesk-windows-x64.exe`, checks its SHA-256 against the release's `SHA256SUMS`, installs it for your
-user, offers to start PhoneDesk at sign-in (a per-user Task Scheduler task, no admin), starts it, and prints the phone URL
-and pairing PIN.
+You will see a download bar, then a few `OK` lines. At the end PhoneDesk prints a **QR code**, a **phone address**
+(for example `http://your-mac.local:7420`) and a **6-digit PIN**. Keep that window open for the next step.
 
-- **Uninstall:** `irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.ps1 | iex` (keeps your data).
-- **Firewall:** the installer adds one inbound rule for `phonedesk.exe`, limited to your local subnet (one UAC prompt), before the first start, so Windows does not block phones.
-- **Known issue:** typing text from a tile (and macros that type) can produce wrong characters on Windows; opening apps, shortcuts, media and volume work. A fix is in progress.
-- **SmartScreen:** an unsigned download may show "Windows protected your PC": choose *More info*, then *Run anyway*.
-- **Shortcuts:** in a layout, `cmd` means Ctrl on Windows and `option` means Alt. The management page shows Ctrl/Alt/Shift
-  there and the Mac symbols on macOS. Shortcuts that need the Windows key cannot be pressed.
-- Open the management page's **Permissions** tab to check the firewall and the helper.
+PhoneDesk now starts by itself every time you sign in, and the `phonedesk` command works in any new terminal window.
+
+### 2. Open it on your phone
+
+- **Easiest:** open the phone's **Camera** and point it at the QR code on the computer. Tap the link that appears.
+- **Or** type the phone address into the phone's browser and enter the PIN.
+
+The phone remembers it, so you only do this once. For a full-screen panel, add it to the home screen:
+
+- **iPhone (Safari):** tap **Share** → **Add to Home Screen**.
+- **Android (Chrome):** tap **⋮** → **Add to Home screen**.
+
+### 3. Make it yours
+
+On the computer, open **http://localhost:7420/manage/** in your browser. Drag apps, shortcuts and widgets onto the
+phone preview, then press **Save**. The phone updates right away.
+
+The first time a key sends a shortcut, macOS asks for **Accessibility** permission: allow it (System Settings →
+Privacy & Security → Accessibility). Windows asks once to allow PhoneDesk on the network: allow it.
+
+### Something not working?
+
+| Problem | What to do |
+|---|---|
+| The phone cannot open the address | Make sure the phone and the computer are on the **same Wi-Fi**. On Windows, allow PhoneDesk in the firewall prompt. Try the number address the installer printed (`http://192.168…:7420`). |
+| `could not reach GitHub` or `error: 503` | GitHub had a hiccup. Wait a few seconds and run the same line again. |
+| The download is slow | It is about 20 MB (Windows 40 MB). Leave it running; the bar shows the progress. |
+| `phonedesk: command not found` | Open a **new** terminal window. |
+| A key does nothing on the Mac | Allow **Accessibility** for PhoneDesk, then run `phonedesk doctor` to see what else is missing. |
+| `port 7420 is in use` | Another program uses that port. Run the installer again with `--port 7421` (Mac: `… \| bash -s -- --port 7421`). |
+
+### Update or remove
+
+- **Update:** run the same install line again. Your layout and paired phones are kept.
+- **Remove (Mac):** `curl -fsSL https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.sh | bash`. Your data is kept; add `-s -- --purge` after `bash` to delete it too.
+- **Remove (Windows):** `irm https://raw.githubusercontent.com/howznguyen/phonedesk/main/uninstall.ps1 | iex`.
+
+<details>
+<summary>More installer options and details</summary>
+
+- The installer downloads the right file from the [latest release](https://github.com/howznguyen/phonedesk/releases/latest), checks
+  its SHA-256 against `SHA256SUMS` and refuses on a mismatch, installs it for your user only (no `sudo`, no
+  administrator), starts it at sign-in (a launchd agent on macOS, a Task Scheduler task on Windows) and adds it to your PATH.
+- Mac options go after `bash -s --`: `--yes` (no questions), `--version 0.1.1`, `--port 7421`, `--no-autostart`,
+  `--no-open`, `--no-path`, `--dry-run`. On Windows set environment variables before the line, for example
+  `$env:PHONEDESK_PORT=7421; irm … | iex` (see the top of [setup.ps1](setup.ps1)).
+- Files: the program is `~/.phonedesk/bin/phonedesk` on macOS and `%LOCALAPPDATA%\PhoneDesk\bin\phonedesk.exe` on
+  Windows; your data is in `~/.phonedesk`; logs are in `~/.phonedesk/logs`.
+- Background service: `phonedesk service install|uninstall|status|restart`.
+- Signing: the binaries are signed ad hoc, not with an Apple Developer ID or a Windows certificate. The installers handle
+  this; a file downloaded in a browser may need `xattr -d com.apple.quarantine <file>` on macOS or "More info → Run
+  anyway" in Windows SmartScreen.
+- Known issue on Windows: keys that type text can produce wrong characters. Opening apps, shortcuts, media and volume work.
+
+</details>
 
 ## Install from source
 
