@@ -197,6 +197,8 @@ describe("win32 platform adapter (fake helper, fake input, fake credentials)", (
     await expect(p.setVolume({ level: 101 })).rejects.toThrow("0-100");
     await expect(p.setVolume({ level: 1.5 })).rejects.toThrow("0-100");
     expect(await make({ "volume.get": new Error("x") }).p.readVolume()).toBeNull();
+    expect(await make({ "volume.get": null }).p.readVolume()).toBeNull(); // no audio device
+    await expect(make({ "volume.set": new Error("no audio device") }).p.setVolume({ level: 10 })).rejects.toThrow("no audio device");
   });
 
   test("media: read maps to RawMedia with a readable app name; null and errors are 'nothing playing'", async () => {
@@ -543,7 +545,8 @@ describe.skipIf(process.platform !== "win32")("real Windows (read-only)", () => 
     const h = new H.WinHelper({ dir: sandbox });
     try {
       expect(await h.call("ping", {}, 30_000)).toBe("pong");
-      expect(typeof (await h.call<any>("volume.get")).level).toBe("number");
+      const vol = await h.call<any>("volume.get"); // a machine without an audio device (a CI runner) answers null, never an error
+      expect(vol === null || typeof vol.level === "number").toBe(true);
       expect(Object.keys(await h.call("net.counters")).length).toBeGreaterThan(0);
       expect((await h.call<any[]>("proc.list", {}, 20_000)).length).toBeGreaterThan(5);
       expect((await h.call<any[]>("apps.list", {}, 30_000)).length).toBeGreaterThan(3);

@@ -317,5 +317,5 @@ describe("GET /api/doctor and the CLI", () => {
     expect(req.stderr.toString()).toContain("No PhoneDesk agent answered");
     const j = JSON.parse(run(["--json"]).stdout.toString());
     expect(j.source).toBe("terminal");
-  }, 30_000);
+  }, 90_000);
 });

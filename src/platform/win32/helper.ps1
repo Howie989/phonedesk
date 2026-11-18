@@ -33,6 +33,11 @@ namespace PD {
   [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorCom {}
 
   public static class Audio {
+    // 0x80070490 (ELEMENT_NOT_FOUND) = no default playback device (a server, a CI runner, an unplugged headset)
+    public static bool Available() {
+      try { var e = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCom()); IMMDevice d; return e.GetDefaultAudioEndpoint(0, 1, out d) == 0 && d != null; }
+      catch { return false; }
+    }
     static IAudioEndpointVolume Ep() {
       var e = (IMMDeviceEnumerator)(new MMDeviceEnumeratorCom());
       IMMDevice d; Marshal.ThrowExceptionForHR(e.GetDefaultAudioEndpoint(0, 1, out d));
@@ -199,8 +204,12 @@ function Cmd-MediaControl($a) {
   $true
 }
 
-function Cmd-VolumeGet { @{ level = [int][Math]::Round([PD.Audio]::GetLevel() * 100); muted = [PD.Audio]::GetMute() } }
+function Cmd-VolumeGet {
+  if (-not [PD.Audio]::Available()) { return $null }  # no audio device: the agent reports "unknown", never an error
+  try { @{ level = [int][Math]::Round([PD.Audio]::GetLevel() * 100); muted = [PD.Audio]::GetMute() } } catch { $null }
+}
 function Cmd-VolumeSet($a) {
+  if (-not [PD.Audio]::Available()) { throw "no audio device" }
   if ($null -ne $a.level) { [PD.Audio]::SetLevel([float]([Math]::Max(0, [Math]::Min(100, [double]$a.level)) / 100.0)) }
   if ($null -ne $a.muted) { [PD.Audio]::SetMute([bool]$a.muted) }
   $true

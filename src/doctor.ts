@@ -203,8 +203,11 @@ async function hooks(p: Probes, ctx: DoctorCtx): Promise<DoctorItem[]> {
 async function runWindows(p: Probes, ctx: DoctorCtx): Promise<DoctorReport> {
   const W = await import("./platform/win32/doctor");
   const items: DoctorItem[] = [{ id: "agent", title: t("PhoneDesk"), status: "ok", detail: `${p.version} · ${p.exe}` }];
-  items.push(await W.startup(p), await W.signature(p), await W.smartscreen(p), W.desktopSession(p), await W.helper(p), await W.claudeSignIn(p, ctx), W.haToken(ctx), await W.network(p), await W.firewall(p));
-  items.push(...(await hooks(p, ctx)));
+  // every probe is bounded (see realProbes.run / helperPing) and they run side by side: the whole check takes as long as the slowest one
+  const [startup, signature, smartscreen, helper, claude, network, firewall, hookItems] = await Promise.all([
+    W.startup(p), W.signature(p), W.smartscreen(p), W.helper(p), W.claudeSignIn(p, ctx), W.network(p), W.firewall(p), hooks(p, ctx),
+  ]);
+  items.push(startup, signature, smartscreen, W.desktopSession(p), helper, claude, W.haToken(ctx), network, firewall, ...hookItems);
   return { version: p.version, exe: p.exe, asService: p.asService, platform: p.platform, items };
 }
 
@@ -341,7 +344,7 @@ export function realAxPrompt(): boolean | null {
 async function winHelperPing(): Promise<string> {
   const { WinHelper } = await import("./platform/win32/helper");
   const h = new WinHelper();
-  try { return await h.call<string>("ping", {}, 15_000); } finally { h.dispose(); }
+  try { return await h.call<string>("ping", {}, 8_000); } finally { h.dispose(); }
 }
 
 export function realProbes(version: string): Probes {
@@ -355,10 +358,14 @@ export function realProbes(version: string): Probes {
     run: async (argv) => {
       try {
         const p = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
-        const timer = setTimeout(() => p.kill(), 5000);
-        const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
-        clearTimeout(timer);
-        return { code: await p.exited, out: `${o}\n${e}`.trim() };
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        // bounded no matter what the child does: after 6 s we answer, kill it and stop waiting for its pipes
+        const timeout = new Promise<{ code: number; out: string }>((res) => { timer = setTimeout(() => { try { p.kill(); } catch { /* gone */ } res({ code: 124, out: "timed out" }); }, 6000); });
+        const done = (async () => {
+          const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+          return { code: await p.exited, out: `${o}\n${e}`.trim() };
+        })();
+        try { return await Promise.race([done, timeout]); } finally { clearTimeout(timer); }
       } catch (err: any) {
         return { code: 127, out: String(err?.message ?? err) };
       }
